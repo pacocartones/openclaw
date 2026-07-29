@@ -74,6 +74,8 @@ export type EmbeddedAgentSubscribeState = {
     toolName?: string;
     meta?: string;
     replaySafe?: boolean;
+    sideEffectFree?: boolean;
+    codeModeRepairAllowed?: boolean;
     isError?: true;
     asyncStarted?: boolean;
     asyncTaskRunId?: string;

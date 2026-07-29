@@ -114,7 +114,8 @@ describe("prepareEmbeddedRunTerminal run stats", () => {
   type StatsInput = {
     attempt?: Partial<EmbeddedRunAttemptResult>;
     assistantTurns?: number;
-    bridgeCalls?: { search: number; describe: number; call: number };
+    bridgeCalls?: { search: number; describe: number; call: number; sequence?: string[] };
+    codeModeEngaged?: boolean;
     config?: unknown;
     provider?: string;
     model?: string;
@@ -139,6 +140,7 @@ describe("prepareEmbeddedRunTerminal run stats", () => {
     Object.assign(usageAccumulator, statsInput.usage);
     usageAccumulator.assistantTurns = statsInput.assistantTurns ?? 0;
     usageAccumulator.bridgeCalls = statsInput.bridgeCalls;
+    usageAccumulator.codeModeEngaged = statsInput.codeModeEngaged;
     return prepareEmbeddedRunTerminal({
       runParams: {
         sessionId: "session-1",
@@ -196,6 +198,14 @@ describe("prepareEmbeddedRunTerminal run stats", () => {
     expect(prepared.agentMeta.codeModeEngaged).toBe(expected);
   });
 
+  it("preserves Code Mode engagement from an earlier run attempt", async () => {
+    const prepared = await prepareStats({
+      attempt: { codeModeEngaged: false },
+      codeModeEngaged: true,
+    });
+    expect(prepared.agentMeta.codeModeEngaged).toBe(true);
+  });
+
   it("stamps assistantTurns from the run accumulator and omits zero", async () => {
     const counted = await prepareStats({ assistantTurns: 3 });
     expect(counted.agentMeta.assistantTurns).toBe(3);
@@ -206,9 +216,14 @@ describe("prepareEmbeddedRunTerminal run stats", () => {
 
   it("stamps run-accumulated bridge call counts and omits them when absent", async () => {
     const withBridge = await prepareStats({
-      bridgeCalls: { search: 2, describe: 1, call: 5 },
+      bridgeCalls: { search: 2, describe: 1, call: 5, sequence: ["read", "write", "read"] },
     });
-    expect(withBridge.agentMeta.bridgeCalls).toEqual({ search: 2, describe: 1, call: 5 });
+    expect(withBridge.agentMeta.bridgeCalls).toEqual({
+      search: 2,
+      describe: 1,
+      call: 5,
+      sequence: ["read", "write", "read"],
+    });
 
     const withoutBridge = await prepareStats({});
     expect(withoutBridge.agentMeta).not.toHaveProperty("bridgeCalls");

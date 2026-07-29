@@ -252,6 +252,28 @@ describe("Tool Search input schemas", () => {
     expect(target.execute).not.toHaveBeenCalled();
   });
 
+  it("rechecks read-only safety after a policy hook adjusts arguments", async () => {
+    const hook = vi.fn(async () => ({ params: { action: "add" } }));
+    initializeGlobalHookRunner(
+      createMockPluginRegistry([{ hookName: "before_tool_call", handler: hook }]),
+    );
+    const target = fakeTool(
+      "cron",
+      Type.Object({ action: Type.String() }, { additionalProperties: false }),
+    );
+    const { catalogRef, config } = createRuntime([target]);
+    const runtime = new ToolSearchRuntime({ catalogRef }, resolveToolSearchConfig(config), {
+      validateInput: true,
+      enforceSideEffectFree: true,
+    });
+
+    await expect(runtime.call("cron", { action: "list" })).rejects.toThrow(
+      "read-only Code Mode policy",
+    );
+    expect(hook).toHaveBeenCalledOnce();
+    expect(target.execute).not.toHaveBeenCalled();
+  });
+
   it("lets policy hooks block invalid arguments before schema validation", async () => {
     const hook = vi.fn(async () => ({ block: true, blockReason: "blocked by policy" }));
     initializeGlobalHookRunner(

@@ -100,6 +100,7 @@ export type EmbeddedAgentMeta = {
     search: number;
     describe: number;
     call: number;
+    sequence?: string[];
   };
   /** Estimated USD cost of the run's accumulated usage. Omitted when the model has no cost data. */
   costUsd?: number;

@@ -50,10 +50,21 @@ commands are rejected before the QuickJS worker starts with actionable
 - Every catalog-eligible enabled tool (OpenClaw core, plugin, MCP, client) is hidden as a
   standalone model tool and exposed inside the guest program through `ALL_TOOLS`
   and `tools`.
-- The `exec` description carries a bounded quick index of exact OpenClaw/plugin
-  catalog ids, compact input hints, and compact declared output hints when a
-  trusted tool provides an output schema. It omits descriptions, full schemas,
-  MCP entries, and overflow entries; guest-side catalog lookup remains the fallback.
+- The `exec` description carries a bounded index of unique OpenClaw/plugin
+  methods such as `tools.read(...)`, with compact input hints and short declared
+  output hints. It omits descriptions, full schemas, ambiguous names, MCP
+  entries, and overflow entries; guest-side catalog lookup remains the fallback.
+- A trailing top-level guest API call is returned automatically, so
+  `await tools.read(...)` does not silently produce `null`. Explicit `return`
+  remains the clearest form for larger programs.
+- When a provider serializes an exact guest method such as `read` or
+  `tools.read` as an outer tool call, OpenClaw converts it into an `exec` cell.
+  The actual tool still runs through the Code Mode bridge with normal policy,
+  approvals, hooks, and telemetry.
+- When a model instead puts guest arguments directly in `exec` without `code`,
+  OpenClaw converts them only if exactly one unique direct method schema
+  explicitly declares every supplied key and accepts the complete argument
+  object. Ambiguous or invalid matches remain rejected.
 - Guest code searches the hidden catalog, describes a tool's schema, and calls
   a tool through the same execution path used by normal agent turns (policy,
   approvals, hooks, telemetry all still apply).
@@ -150,6 +161,15 @@ Set explicit limits for tighter bounds:
 
 ### What the model does
 
+Prefer unique direct methods when they are present in the bounded index:
+
+```javascript
+const file = await tools.read({ path: "notes.txt" });
+return file;
+```
+
+Use workspace-relative file paths. Do not prefix them with `/workspace`.
+
 For a tool with a declared output such as
 `Array<{ id: string; paid: boolean; tons: number }>`, one guest program can
 select, call, and transform it:
@@ -160,10 +180,10 @@ const shipments = await tools.callValue(shipmentTool.id, {});
 return shipments.filter((shipment) => !shipment.paid && shipment.tons > 10);
 ```
 
-When a quick-index line ends in `-> ?`, the output shape is unknown. The first
-`exec` must return `await tools.callValue(...)` unchanged. A later `exec` can
-transform the observed value. This costs an extra model turn, but prevents the
-model from guessing field names.
+If a method is absent from the bounded index, use `ALL_TOOLS` or
+`tools.search(...)` to find its exact catalog id, then call
+`tools.callValue(...)`. When the output shape is unknown, return the raw value
+unchanged before attempting a later transform.
 
 ### Verify the active surface
 
@@ -420,8 +440,11 @@ Rules:
   string enum (`"javascript" | "typescript"`), not a `oneOf`/`anyOf` union,
   since some providers reject those shapes.
 - If `language` is `"typescript"`, OpenClaw transpiles before evaluation.
-- `exec` rejects `import`, `require`, dynamic import, and module-loader
-  patterns.
+- `exec` normalizes static imports from the exact reserved virtual module
+  `"tools"` to the injected `tools` global. It rejects every other `import`,
+  `require`, dynamic import, and module-loader pattern.
+- Text tool results keep their structured fields and support common string
+  methods directly. Sandboxed `console` methods append text to Code Mode output.
 - `exec` never exposes the normal shell `exec` implementation recursively.
 - Outer code-mode `exec` hook events carry `toolKind: "code_mode_exec"` and
   `toolInputKind: "javascript" | "typescript"` (when known), so policies can
@@ -436,6 +459,7 @@ type CodeModeResult = CodeModeCompletedResult | CodeModeWaitingResult | CodeMode
 type CodeModeCompletedResult = {
   status: "completed";
   value: unknown;
+  sideEffectFree: boolean;
   output?: CodeModeOutput[];
   telemetry: CodeModeTelemetry;
 };
@@ -445,6 +469,7 @@ type CodeModeWaitingResult = {
   runId: string;
   reason: "pending_tools" | "yield";
   pendingToolCalls?: CodeModePendingToolCall[];
+  sideEffectFree: boolean;
   output?: CodeModeOutput[];
   telemetry: CodeModeTelemetry;
 };

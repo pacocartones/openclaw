@@ -1040,11 +1040,13 @@ describe("Tool Search", () => {
       searchCount?: number;
       describeCount?: number;
       callCount?: number;
+      callSequence?: string[];
     };
     expect(telemetry.catalogSize).toBe(2);
     expect(telemetry.searchCount).toBe(1);
     expect(telemetry.describeCount).toBe(1);
     expect(telemetry.callCount).toBe(1);
+    expect(telemetry.callSequence).toEqual(["fake_create_ticket"]);
   });
 
   it("scopes catalogs by run id when attempts share a session", async () => {

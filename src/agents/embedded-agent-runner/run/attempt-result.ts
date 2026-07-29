@@ -94,6 +94,8 @@ function normalizeEmbeddedAttemptToolMetas(
         toolName: string;
         meta?: string;
         replaySafe?: boolean;
+        sideEffectFree?: boolean;
+        codeModeRepairAllowed?: boolean;
         isError?: true;
         asyncStarted?: boolean;
         asyncTaskRunId?: string;
@@ -106,6 +108,12 @@ function normalizeEmbeddedAttemptToolMetas(
         meta: entry.meta,
         replaySafe: entry.replaySafe === true,
       };
+      if (entry.sideEffectFree !== undefined) {
+        normalized.sideEffectFree = entry.sideEffectFree;
+      }
+      if (entry.codeModeRepairAllowed !== undefined) {
+        normalized.codeModeRepairAllowed = entry.codeModeRepairAllowed;
+      }
       if (entry.isError === true) {
         normalized.isError = true;
       }

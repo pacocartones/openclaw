@@ -87,15 +87,23 @@ describe("usage-accumulator", () => {
       // First attempt makes bridge calls, then a retry/fallback attempt runs.
       mergeAttemptRunStatsIntoAccumulator(acc, {
         assistantTurns: 2,
-        bridgeCalls: { search: 1, describe: 2, call: 3 },
+        bridgeCalls: { search: 1, describe: 2, call: 3, sequence: ["read", "write"] },
+        codeModeEngaged: true,
       });
       mergeAttemptRunStatsIntoAccumulator(acc, {
         assistantTurns: 1,
-        bridgeCalls: { search: 0, describe: 1, call: 4 },
+        bridgeCalls: { search: 0, describe: 1, call: 4, sequence: ["read"] },
+        codeModeEngaged: false,
       });
 
       expect(acc.assistantTurns).toBe(3);
-      expect(acc.bridgeCalls).toEqual({ search: 1, describe: 3, call: 7 });
+      expect(acc.bridgeCalls).toEqual({
+        search: 1,
+        describe: 3,
+        call: 7,
+        sequence: ["read", "write", "read"],
+      });
+      expect(acc.codeModeEngaged).toBe(true);
     });
 
     it("keeps bridgeCalls absent for catalog-less attempts", () => {
@@ -105,6 +113,37 @@ describe("usage-accumulator", () => {
 
       expect(acc.assistantTurns).toBe(1);
       expect(acc.bridgeCalls).toBeUndefined();
+      expect(acc.codeModeEngaged).toBeUndefined();
+    });
+
+    it("accumulates tool summaries across no-tool continuation attempts", () => {
+      const acc = createUsageAccumulator();
+
+      mergeAttemptRunStatsIntoAccumulator(acc, {
+        toolMetas: [
+          { toolName: "exec" },
+          { toolName: "read" },
+          { toolName: "exec", isError: true },
+        ],
+        lastToolError: { toolName: "exec" },
+      });
+      mergeAttemptRunStatsIntoAccumulator(acc, {
+        assistantTurns: 1,
+        toolMetas: [],
+      });
+      mergeAttemptRunStatsIntoAccumulator(acc, {
+        toolMetas: [{ toolName: "wait" }],
+      });
+      mergeAttemptRunStatsIntoAccumulator(acc, {
+        toolMetas: [],
+        lastToolError: { toolName: "write" },
+      });
+
+      expect(acc.toolSummary).toEqual({
+        calls: 5,
+        tools: ["exec", "read", "wait", "write"],
+        failures: 2,
+      });
     });
   });
 

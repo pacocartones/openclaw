@@ -46,6 +46,8 @@ function parkExpiringRun(
     replayId: "cm_replay_lifecycle",
     pending: [pending],
     replaySafe: false,
+    readOnly: false,
+    sideEffectFree: false,
     settlementMode: { kind: "awaiting" },
     snapshotBytes: new Uint8Array([1]),
     parentToolCallId: "code-mode-lifecycle",

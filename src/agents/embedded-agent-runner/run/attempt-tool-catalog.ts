@@ -6,6 +6,8 @@ import { resolveToolLoopDetectionConfig } from "../../agent-tools.js";
 import {
   CODE_MODE_EXEC_TOOL_NAME,
   CODE_MODE_WAIT_TOOL_NAME,
+  collectCodeModeDirectToolNames,
+  collectCodeModeDirectToolSchemas,
   createCodeModeTools,
 } from "../../code-mode.js";
 import { filterLocalModelLeanTools } from "../../local-model-lean.js";
@@ -87,6 +89,7 @@ export function prepareEmbeddedAttemptToolCatalog(input: {
         catalogRef: preparedToolBase.toolSearchCatalogRef,
         abortSignal: input.abortSignal,
         forceRestartSafeTools: attempt.forceRestartSafeTools,
+        forceReadOnlyTools: attempt.forceReadOnlyTools,
         executeTool: input.executeCodeModeTool,
         codeModeSkills,
       })
@@ -141,6 +144,14 @@ export function prepareEmbeddedAttemptToolCatalog(input: {
     toolSearchControlsEnabledForRun &&
     toolSearchConfig.mode === "directory" &&
     toolSearch.catalogRegistered;
+  const codeModeDirectToolNames = codeModeControlsEnabledForRun
+    ? collectCodeModeDirectToolNames(preparedToolBase.toolSearchCatalogRef?.current?.entries ?? [])
+    : undefined;
+  const codeModeDirectToolSchemas = codeModeControlsEnabledForRun
+    ? collectCodeModeDirectToolSchemas(
+        preparedToolBase.toolSearchCatalogRef?.current?.entries ?? [],
+      )
+    : undefined;
   input.markStage("bundle-tools");
   const explicitToolAllowlistSources = collectAttemptExplicitToolAllowlistSources({
     capabilityProfile: runtimeCapabilityProfile,
@@ -163,14 +174,15 @@ export function prepareEmbeddedAttemptToolCatalog(input: {
         : undefined,
     explicitAllowlistSources: explicitToolAllowlistSources,
   });
-  const emptyExplicitToolAllowlistError = attempt.forceRestartSafeTools
-    ? null
-    : buildEmptyExplicitToolAllowlistError({
-        sources: explicitToolAllowlistSources,
-        callableToolNames: toolSearchRunPlan.emptyAllowlistCallableNames,
-        toolsEnabled,
-        disableTools: attempt.disableTools,
-      });
+  const emptyExplicitToolAllowlistError =
+    attempt.forceRestartSafeTools || attempt.forceReadOnlyTools
+      ? null
+      : buildEmptyExplicitToolAllowlistError({
+          sources: explicitToolAllowlistSources,
+          callableToolNames: toolSearchRunPlan.emptyAllowlistCallableNames,
+          toolsEnabled,
+          disableTools: attempt.disableTools,
+        });
   logAgentRuntimeToolDiagnostics({
     runtimePlan: attempt.runtimePlan,
     tools: effectiveTools,
@@ -186,6 +198,8 @@ export function prepareEmbeddedAttemptToolCatalog(input: {
 
   return {
     catalogToolHookContext,
+    codeModeDirectToolNames,
+    codeModeDirectToolSchemas,
     deferredDirectoryToolsCallable,
     effectiveTools,
     emptyExplicitToolAllowlistError,

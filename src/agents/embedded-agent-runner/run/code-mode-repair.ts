@@ -18,6 +18,7 @@ type CodeModeFailure = {
   failurePhase: CodeModeFailurePhase;
   bridgeDispatchStarted: boolean;
   bridgeDispatchKnown: boolean;
+  sideEffectFree: boolean;
   details: Record<string, unknown>;
 };
 
@@ -58,6 +59,7 @@ function codeModeFailureFromOutcome(context: AfterToolOutcomeContext): CodeModeF
       ),
       bridgeDispatchStarted,
       bridgeDispatchKnown: typeof details.bridgeDispatchStarted === "boolean",
+      sideEffectFree: details.sideEffectFree === true,
       details,
     };
   }
@@ -72,6 +74,7 @@ function codeModeFailureFromOutcome(context: AfterToolOutcomeContext): CodeModeF
     failurePhase: argumentValidation ? "input" : "host",
     bridgeDispatchStarted: context.executionStarted,
     bridgeDispatchKnown: argumentValidation,
+    sideEffectFree: false,
     details,
   };
 }
@@ -102,6 +105,7 @@ function preserveOriginalDispatchEvidence(
       failurePhase: "bridge",
       bridgeDispatchStarted: true,
       bridgeDispatchKnown: true,
+      sideEffectFree: original.sideEffectFree,
     };
   }
   if (!original.bridgeDispatchKnown || preserved.bridgeDispatchKnown) {
@@ -112,6 +116,7 @@ function preserveOriginalDispatchEvidence(
     failurePhase: original.failurePhase,
     bridgeDispatchStarted: original.bridgeDispatchStarted,
     bridgeDispatchKnown: true,
+    sideEffectFree: original.sideEffectFree,
   };
 }
 
@@ -191,8 +196,15 @@ function hookFailure(
         : "input",
     bridgeDispatchStarted: original?.bridgeDispatchStarted ?? context.executionStarted,
     bridgeDispatchKnown: original?.bridgeDispatchKnown ?? !context.executionStarted,
+    sideEffectFree: false,
     details: original?.details ?? {},
   };
+}
+
+function repairReason(failure: CodeModeFailure): string {
+  return failure.bridgeDispatchStarted && failure.sideEffectFree
+    ? "Prior nested calls were read-only. Retry exec once with corrected JavaScript or TypeScript. Do not repeat unchanged input."
+    : "Retry exec once with corrected JavaScript or TypeScript. Do not repeat unchanged input.";
 }
 
 /** Installs one bounded, side-effect-aware Code Mode repair opportunity. */
@@ -255,7 +267,10 @@ export function installCodeModeRepairHook(params: { agent: Agent }): void {
       });
     }
 
-    if (failure.bridgeDispatchStarted || effective.toolCall.name === CODE_MODE_WAIT_TOOL_NAME) {
+    if (
+      (failure.bridgeDispatchStarted && !failure.sideEffectFree) ||
+      effective.toolCall.name === CODE_MODE_WAIT_TOOL_NAME
+    ) {
       repairState = "consumed";
       return renderFailure({
         failure,
@@ -269,15 +284,16 @@ export function installCodeModeRepairHook(params: { agent: Agent }): void {
 
     const repairable =
       failure.bridgeDispatchKnown &&
-      (failure.failurePhase === "input" || failure.failurePhase === "guest") &&
+      (failure.failurePhase === "input" ||
+        failure.failurePhase === "guest" ||
+        (failure.failurePhase === "bridge" && failure.sideEffectFree)) &&
       (failure.code === "invalid_input" || failure.code === "internal_error");
     if (repairState === "offered" && effective.assistantMessage === repairOfferedBy && repairable) {
       return renderFailure({
         failure,
         allowed: true,
         remainingAttempts: 1,
-        reason:
-          "Retry exec once with corrected JavaScript or TypeScript. Do not repeat unchanged input.",
+        reason: repairReason(failure),
         terminate: false,
       });
     }
@@ -310,8 +326,7 @@ export function installCodeModeRepairHook(params: { agent: Agent }): void {
       failure,
       allowed: true,
       remainingAttempts: 1,
-      reason:
-        "Retry exec once with corrected JavaScript or TypeScript. Do not repeat unchanged input.",
+      reason: repairReason(failure),
       terminate: false,
     });
   };

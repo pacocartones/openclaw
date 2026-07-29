@@ -26,6 +26,8 @@ import {
   resolveEmptyResponseRetryInstruction,
   resolveIncompleteTurnPayloadText,
   resolveReasoningOnlyRetryInstruction,
+  RESTART_SAFE_CODE_MODE_CONTINUATION_INSTRUCTION,
+  resolveReplaySafeCodeModeErrorRetryInstruction,
   resolveRunLivenessState,
   resolveSilentToolResultReplyPayload,
   resolveSettledToolTerminalContinuationInstruction,
@@ -47,6 +49,8 @@ import {
 import type { EmbeddedRunAttemptResult } from "./types.js";
 
 const MAX_MISSING_ASSISTANT_RETRIES = 1;
+const MAX_CODE_MODE_ERROR_CONTINUATIONS = 1;
+const MAX_CODE_MODE_VERIFICATION_CONTINUATIONS = 2;
 const COMPACTION_CONTINUATION_RETRY_INSTRUCTION =
   "The previous attempt compacted the conversation context before producing a final user-visible answer. Continue from the compacted transcript and produce the final answer now. Do not restart from scratch, do not repeat completed work, and do not rerun tools unless the transcript clearly lacks required evidence.";
 const BEFORE_AGENT_FINALIZE_RETRY_PROMPT_PREFIX =
@@ -74,8 +78,9 @@ export function resolveSettledTurnFinalizationRequest(input: {
   hasTerminalToolPresentation: boolean;
   terminalState: EmbeddedRunTerminalState;
   settledTurnFinalizationAvailable: boolean;
+  toolCapableContinuationAvailable?: boolean;
 }): string | null {
-  if (!input.settledTurnFinalizationAvailable) {
+  if (!input.settledTurnFinalizationAvailable && input.toolCapableContinuationAvailable !== true) {
     return null;
   }
   const terminalAborted = isEmbeddedRunTerminalAbort(input.terminalState.outcome);
@@ -112,6 +117,7 @@ export function resolveSettledTurnFinalizationRequest(input: {
     modelId: input.activeErrorContext.model,
     modelApi: input.modelApi,
     executionContract: input.executionContract,
+    allowCodeModeContinuation: input.toolCapableContinuationAvailable === true,
     allowEmptyStopContinuation:
       input.runParams.terminalReplyExpectation === "required" ||
       (input.runParams.terminalReplyExpectation == null &&
@@ -173,6 +179,10 @@ export async function resolveEmbeddedRunTerminal(input: {
   apiKeyInfo: ResolvedProviderAuth | null;
   agentHarnessId: string;
   settledTurnFinalizationAttempted: boolean;
+  toolCapableContinuation?: {
+    instruction: string;
+    forceReadOnlyTools: boolean;
+  } | null;
   pluginHarnessOwnsTransport: boolean;
   pluginHarnessOwnsAuthBootstrap: boolean;
   reportedModelRef: { provider: string; model: string };
@@ -226,8 +236,20 @@ export async function resolveEmbeddedRunTerminal(input: {
           timedOut: terminalTimedOut,
           attempt,
         });
-  const nextEmptyResponseRetryInstruction =
+  const nextCodeModeErrorRetryInstruction =
     emptyAssistantReplyIsSilent || settledTurnFinalizationAttempted
+      ? null
+      : resolveReplaySafeCodeModeErrorRetryInstruction({
+          payloadCount,
+          aborted: terminalAborted,
+          timedOut: terminalTimedOut,
+          attempt,
+        });
+  const nextEmptyResponseRetryInstruction =
+    emptyAssistantReplyIsSilent ||
+    settledTurnFinalizationAttempted ||
+    nextCodeModeErrorRetryInstruction ||
+    input.toolCapableContinuation
       ? null
       : resolveEmptyResponseRetryInstruction({
           provider: input.activeErrorContext.provider,
@@ -276,6 +298,42 @@ export async function resolveEmbeddedRunTerminal(input: {
     return { action: "retry" };
   }
   const availableTerminalToolPresentation = input.readTerminalToolPresentation();
+  if (
+    !nextReasoningOnlyRetryInstruction &&
+    nextCodeModeErrorRetryInstruction &&
+    retryState.codeModeErrorContinuationAttempts < MAX_CODE_MODE_ERROR_CONTINUATIONS
+  ) {
+    retryState.codeModeErrorContinuationAttempts += 1;
+    input.activateInternalPrompt(nextCodeModeErrorRetryInstruction, false);
+    log.warn(
+      `side-effect-free Code Mode failure stopped without correction: runId=${runParams.runId} sessionId=${runParams.sessionId} ` +
+        `provider=${input.activeErrorContext.provider}/${input.activeErrorContext.model} — retrying ${retryState.codeModeErrorContinuationAttempts}/${MAX_CODE_MODE_ERROR_CONTINUATIONS}`,
+    );
+    return { action: "retry" };
+  }
+  if (
+    !nextReasoningOnlyRetryInstruction &&
+    input.toolCapableContinuation &&
+    retryState.codeModeVerificationContinuationAttempts < MAX_CODE_MODE_VERIFICATION_CONTINUATIONS
+  ) {
+    retryState.codeModeVerificationContinuationAttempts += 1;
+    const forceReadOnlyTools =
+      retryState.forceReadOnlyToolsForNextAttempt ||
+      input.toolCapableContinuation.forceReadOnlyTools;
+    retryState.forceReadOnlyToolsForNextAttempt = forceReadOnlyTools;
+    input.activateInternalPrompt(
+      forceReadOnlyTools
+        ? RESTART_SAFE_CODE_MODE_CONTINUATION_INSTRUCTION
+        : input.toolCapableContinuation.instruction,
+      false,
+    );
+    log.warn(
+      `settled Code Mode work stopped before final verification: runId=${runParams.runId} sessionId=${runParams.sessionId} ` +
+        `provider=${input.activeErrorContext.provider}/${input.activeErrorContext.model} — retrying ${retryState.codeModeVerificationContinuationAttempts}/${MAX_CODE_MODE_VERIFICATION_CONTINUATIONS} ` +
+        `with ${forceReadOnlyTools ? "read-only" : "normal"} tools`,
+    );
+    return { action: "retry" };
+  }
   if (
     !nextReasoningOnlyRetryInstruction &&
     nextEmptyResponseRetryInstruction &&

@@ -41,6 +41,7 @@ import {
   wrapStreamFnSanitizeMalformedToolCalls,
   wrapStreamFnTrimToolCallNames,
 } from "./attempt.tool-call-normalization.js";
+import { wrapStreamFnTranslateCodeModeGuestToolCalls } from "./code-mode-tool-call-repair.js";
 import {
   resolveLlmFirstEventTimeoutMs,
   resolveLlmIdleTimeoutMs,
@@ -68,6 +69,8 @@ export function installEmbeddedAttemptStreamGuards(input: {
   isOpenAIResponsesApi: boolean;
   replayAllowedToolNames: Set<string>;
   liveAllowedToolNames: Set<string>;
+  codeModeDirectToolNames?: ReadonlySet<string>;
+  codeModeDirectToolSchemas?: ReadonlyMap<string, unknown>;
   isYieldDetected: () => boolean;
   clientToolLoopDetection: ReturnType<
     typeof import("../../agent-tools.js").resolveToolLoopDetectionConfig
@@ -240,6 +243,14 @@ export function installEmbeddedAttemptStreamGuards(input: {
       output: input.providerTextTransforms.output,
     });
   }
+
+  // Code Mode translation is semantic normalization. Run it after provider
+  // argument repair/decoding so those lower layers cannot restore stale args.
+  session.agent.streamFn = wrapStreamFnTranslateCodeModeGuestToolCalls(
+    session.agent.streamFn,
+    input.codeModeDirectToolNames,
+    input.codeModeDirectToolSchemas,
+  );
 
   if (input.anthropicPayloadLogger) {
     session.agent.streamFn = input.anthropicPayloadLogger.wrapStreamFn(session.agent.streamFn);

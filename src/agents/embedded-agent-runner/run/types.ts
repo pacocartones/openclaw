@@ -261,6 +261,8 @@ export type EmbeddedRunAttemptResult = {
     toolName: string;
     meta?: string;
     replaySafe?: boolean;
+    sideEffectFree?: boolean;
+    codeModeRepairAllowed?: boolean;
     isError?: boolean;
     asyncStarted?: boolean;
     asyncTaskRunId?: string;
@@ -319,6 +321,7 @@ export type EmbeddedRunAttemptResult = {
     search: number;
     describe: number;
     call: number;
+    sequence?: string[];
   };
   replayMetadata: EmbeddedRunReplayMetadata;
   /**

@@ -698,6 +698,25 @@ function expectedEngagement(mode: CodeModeMatrixMode, engaged: boolean | undefin
   return engaged === (mode === "code");
 }
 
+function containsOrderedToolSequence(
+  observed: readonly string[] | undefined,
+  expected: readonly string[],
+): boolean {
+  if (!observed) {
+    return false;
+  }
+  let expectedIndex = 0;
+  for (const name of observed) {
+    if (name === expected[expectedIndex]) {
+      expectedIndex += 1;
+      if (expectedIndex === expected.length) {
+        return true;
+      }
+    }
+  }
+  return expected.length === 0;
+}
+
 function classifyProviderFailure(text: string): CellFailureCategory | null {
   if (
     /\b402\b|billing|credits? (?:depleted|exhausted|insufficient)|payment required/iu.test(text)
@@ -740,10 +759,15 @@ export function classifyCodeModeMatrixCell(params: {
   const identity =
     params.envelope.provider === requestedProvider && params.envelope.model === requestedModel;
   const outerToolExecution = (params.envelope.toolSummary?.calls ?? 0) > 0;
+  const requiredNestedSequence =
+    params.task === "dependent-read-write" ? ["read", "write", "read"] : ["read"];
   // Direct and auto evaluate the model-visible outer tool surface. Forced Code
-  // Mode additionally proves that the exec cell reached a nested catalog tool.
+  // Mode additionally proves the ordered nested operation sequence, including
+  // the read-back after a dependent write.
   const toolExecution =
-    outerToolExecution && (params.mode !== "code" || (params.envelope.bridgeCalls?.call ?? 0) > 0);
+    outerToolExecution &&
+    (params.mode !== "code" ||
+      containsOrderedToolSequence(params.envelope.bridgeCalls?.sequence, requiredNestedSequence));
   const oracle = { answer, effect, engagement, identity, toolExecution };
   if (params.stdoutContractValid === false) {
     return { failureCategory: "harness_error", oracle, passed: false };

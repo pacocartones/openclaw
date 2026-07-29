@@ -364,6 +364,48 @@ function isExecToolName(toolName: string): boolean {
   return toolName === "exec" || toolName === "bash";
 }
 
+function isSideEffectFreeCodeModeFailure(toolName: string, result: unknown): boolean {
+  if (toolName !== "exec" && toolName !== "wait") {
+    return false;
+  }
+  const details = readToolResultDetails(result);
+  const repair = asOptionalObjectRecord(details?.repair);
+  return (
+    details?.status === "failed" &&
+    (details.bridgeDispatchStarted === false || details.sideEffectFree === true) &&
+    repair !== undefined &&
+    typeof repair.allowed === "boolean"
+  );
+}
+
+function readCodeModeRepairAllowed(toolName: string, result: unknown): boolean | undefined {
+  if (toolName !== "exec" && toolName !== "wait") {
+    return undefined;
+  }
+  const repair = asOptionalObjectRecord(readToolResultDetails(result)?.repair);
+  return typeof repair?.allowed === "boolean" ? repair.allowed : undefined;
+}
+
+function isSideEffectFreeCodeModeSuccess(toolName: string, result: unknown): boolean {
+  if (toolName !== "exec" && toolName !== "wait") {
+    return false;
+  }
+  const details = readToolResultDetails(result);
+  return (
+    (details?.status === "completed" ||
+      (details?.status === "waiting" && details.replaySafe === true)) &&
+    details.sideEffectFree === true
+  );
+}
+
+function readCodeModeSideEffectFree(toolName: string, result: unknown): boolean | undefined {
+  if (toolName !== "exec" && toolName !== "wait") {
+    return undefined;
+  }
+  const sideEffectFree = readToolResultDetails(result)?.sideEffectFree;
+  return typeof sideEffectFree === "boolean" ? sideEffectFree : undefined;
+}
+
 function isPatchToolName(toolName: string): boolean {
   return toolName === "apply_patch";
 }
@@ -1454,18 +1496,35 @@ export async function handleToolExecutionEnd(
     initialCallSummary?.instanceReplaySafe === true,
     structuredReplaySafe,
   );
+  // The Code Mode repair envelope proves this exec failed before any nested
+  // tool dispatch, so it must not poison a later corrected attempt.
+  const sideEffectFreeCodeModeFailure =
+    isToolError && isSideEffectFreeCodeModeFailure(toolName, sanitizedResult);
+  const sideEffectFreeCodeModeSuccess =
+    !isToolError && isSideEffectFreeCodeModeSuccess(toolName, sanitizedResult);
+  const codeModeSideEffectFree =
+    readCodeModeSideEffectFree(toolName, sanitizedResult) ??
+    (sideEffectFreeCodeModeFailure || sideEffectFreeCodeModeSuccess ? true : undefined);
+  const codeModeRepairAllowed = isToolError
+    ? readCodeModeRepairAllowed(toolName, sanitizedResult)
+    : undefined;
   // A racing observer can consume the active wrapper boundary. Settled and
   // custom producers use their terminal fact, while policy blocks override it.
   const executionStarted =
     (trackedExecutionStarted ?? evt.executionStarted ?? true) && !executionPrevented;
-  const attemptedPotentialSideEffect = !callSummary.replaySafe && executionStarted;
+  const replaySafe =
+    callSummary.replaySafe || sideEffectFreeCodeModeFailure || sideEffectFreeCodeModeSuccess;
+  const attemptedPotentialSideEffect =
+    executionStarted && (codeModeSideEffectFree === false || !replaySafe);
   const meta = callSummary.meta;
   const asyncStarted = !isToolError && isAsyncStartedToolResult(sanitizedResult);
   const asyncTaskIds = asyncStarted ? readAsyncStartedTaskIds(sanitizedResult) : {};
   ctx.state.toolMetas.push({
     toolName,
     meta,
-    replaySafe: callSummary.replaySafe,
+    replaySafe,
+    ...(codeModeSideEffectFree !== undefined ? { sideEffectFree: codeModeSideEffectFree } : {}),
+    ...(codeModeRepairAllowed !== undefined ? { codeModeRepairAllowed } : {}),
     ...(isToolError ? { isError: true } : {}),
     ...(asyncStarted ? { asyncStarted: true, ...asyncTaskIds } : {}),
   });
@@ -1491,6 +1550,9 @@ export async function handleToolExecutionEnd(
     ...(meta ? { meta } : {}),
     executionStarted,
     outcome: isToolError ? "failure" : "success",
+    ...(sideEffectFreeCodeModeFailure || sideEffectFreeCodeModeSuccess
+      ? { nativeMutation: { mutatingAction: false, replaySafe: true } }
+      : {}),
     ...(isToolError
       ? {
           failure: {

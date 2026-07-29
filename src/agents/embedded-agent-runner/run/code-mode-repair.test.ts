@@ -37,6 +37,7 @@ function failedResult(params?: {
   code?: string;
   failurePhase?: "input" | "guest" | "bridge" | "host";
   bridgeDispatchStarted?: boolean;
+  sideEffectFree?: boolean;
   output?: unknown[];
 }): AgentToolResult<unknown> {
   const details = {
@@ -45,6 +46,7 @@ function failedResult(params?: {
     error: "guest failed",
     failurePhase: params?.failurePhase ?? "guest",
     bridgeDispatchStarted: params?.bridgeDispatchStarted ?? false,
+    ...(params?.sideEffectFree !== undefined ? { sideEffectFree: params.sideEffectFree } : {}),
     ...(params?.output ? { output: params.output } : {}),
   };
   return {
@@ -144,7 +146,7 @@ describe("installCodeModeRepairHook", () => {
     });
   });
 
-  it("never offers a retry after bridge dispatch", async () => {
+  it("offers one repair after bridge dispatch when every nested call was read-only", async () => {
     const agent = createAgent();
 
     const result = await agent.afterToolOutcome?.(
@@ -152,6 +154,35 @@ describe("installCodeModeRepairHook", () => {
         result: failedResult({
           failurePhase: "bridge",
           bridgeDispatchStarted: true,
+          sideEffectFree: true,
+        }),
+      }),
+    );
+
+    expect(result).toMatchObject({
+      isError: true,
+      terminate: false,
+      details: {
+        bridgeDispatchStarted: true,
+        sideEffectFree: true,
+        repair: {
+          allowed: true,
+          remainingAttempts: 1,
+          reason: expect.stringContaining("Prior nested calls were read-only"),
+        },
+      },
+    });
+  });
+
+  it("never offers a retry after side-effecting bridge dispatch", async () => {
+    const agent = createAgent();
+
+    const result = await agent.afterToolOutcome?.(
+      outcome({
+        result: failedResult({
+          failurePhase: "bridge",
+          bridgeDispatchStarted: true,
+          sideEffectFree: false,
           output: [{ type: "text", text: "before dispatch failure" }],
         }),
       }),

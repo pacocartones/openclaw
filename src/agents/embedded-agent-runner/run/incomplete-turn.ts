@@ -41,6 +41,7 @@ type IncompleteTurnAttempt = Pick<
   EmbeddedRunAttemptResult,
   | "assistantTexts"
   | "clientToolCalls"
+  | "codeModeEngaged"
   | "currentAttemptAssistant"
   | "yieldDetected"
   | "didSendDeterministicApprovalPrompt"
@@ -139,8 +140,14 @@ const REASONING_ONLY_RETRY_INSTRUCTION =
   "The previous assistant turn recorded reasoning but did not produce a user-visible answer. Continue from that partial turn and produce the visible answer now. Do not restate the reasoning or restart from scratch.";
 const EMPTY_RESPONSE_RETRY_INSTRUCTION =
   "The previous attempt did not produce a user-visible answer. Continue from the current state and produce the visible answer now. Do not restart from scratch.";
+const REPLAY_SAFE_CODE_MODE_ERROR_RETRY_INSTRUCTION =
+  "The prior Code Mode exec failed without side effects. Inspect the prior error and tool output, then retry with changed code using injected global tools only. If text parsing failed, inspect raw `.content` instead of assuming JSON or quoted values. Do not use import, require, process, fs, or absolute workspace paths.";
 const SETTLED_TOOL_TERMINAL_CONTINUATION_INSTRUCTION =
   "The previous assistant turn completed its tool calls but did not produce a user-visible answer. Continue from the current transcript and produce the final user-visible answer now. Do not repeat completed tool calls or restart from scratch.";
+export const RESTART_SAFE_CODE_MODE_CONTINUATION_INSTRUCTION =
+  "The previous Code Mode step completed mutations but stopped before verification. Continue from the transcript using only the available read-only tools. Do not repeat completed mutations. Verify the result, then follow the user's exact requested output format with no extra label or markdown.";
+export const NORMAL_CODE_MODE_CONTINUATION_INSTRUCTION =
+  "The previous Code Mode step was read-only and stopped before the task was complete. Continue from the transcript with tools, use the actual prior output shape, and finish the remaining steps. Follow the user's exact requested output format with no extra label or markdown.";
 
 /**
  * Marks whether retrying the attempt can safely replay the prompt. Concrete
@@ -151,9 +158,11 @@ export function buildAttemptReplayMetadata(
   params: ReplayMetadataAttempt,
 ): EmbeddedRunAttemptResult["replayMetadata"] {
   const hadUnsafeTools = params.toolMetas.some((entry) => entry.replaySafe !== true);
+  const hadKnownSideEffects = params.toolMetas.some((entry) => entry.sideEffectFree === false);
   const hadAsyncStartedTool = params.toolMetas.some((t) => t.asyncStarted === true);
   const hadPotentialSideEffects =
     hadUnsafeTools ||
+    hadKnownSideEffects ||
     hadAsyncStartedTool ||
     hasMessagingToolDeliveryEvidence(params) ||
     hasAcceptedSessionSpawn(params.acceptedSessionSpawns) ||
@@ -169,6 +178,19 @@ export function resolveAttemptReplayMetadata(attempt: {
   replayMetadata?: EmbeddedRunAttemptResult["replayMetadata"] | null;
 }): EmbeddedRunAttemptResult["replayMetadata"] {
   return attempt.replayMetadata ?? REPLAY_UNSAFE_FALLBACK_METADATA;
+}
+
+export type CodeModeContinuationToolPolicy = "normal" | "read-only";
+
+/** Selects the bounded tool policy for an unfinished settled Code Mode turn. */
+export function resolveCodeModeContinuationToolPolicy(attempt: {
+  codeModeEngaged?: boolean;
+  replayMetadata?: EmbeddedRunAttemptResult["replayMetadata"] | null;
+}): CodeModeContinuationToolPolicy | null {
+  if (attempt.codeModeEngaged !== true) {
+    return null;
+  }
+  return resolveAttemptReplayMetadata(attempt).hadPotentialSideEffects ? "read-only" : "normal";
 }
 
 type TerminalAttemptState = Pick<
@@ -785,6 +807,7 @@ export function resolveSettledToolTerminalContinuationInstruction(params: {
   modelApi?: string;
   executionContract?: string;
   allowEmptyStopContinuation?: boolean;
+  allowCodeModeContinuation?: boolean;
   payloadCount: number;
   hasTerminalToolPresentation?: boolean;
   aborted: boolean;
@@ -857,6 +880,7 @@ export function resolveSettledToolTerminalContinuationInstruction(params: {
     return null;
   }
   if (
+    params.allowCodeModeContinuation !== true &&
     !shouldApplyNonVisibleTurnRetryGuard({
       provider: params.provider,
       modelId: params.modelId,
@@ -883,6 +907,10 @@ export function resolveEmptyResponseRetryInstruction(params: {
   timedOut: boolean;
   attempt: IncompleteTurnAttempt;
 }): string | null {
+  const codeModeErrorInstruction = resolveReplaySafeCodeModeErrorRetryInstruction(params);
+  if (codeModeErrorInstruction) {
+    return codeModeErrorInstruction;
+  }
   if (shouldSkipNonVisibleTurnRetry(params)) {
     return null;
   }
@@ -923,6 +951,78 @@ export function resolveEmptyResponseRetryInstruction(params: {
   }
 
   return null;
+}
+
+/** Builds one correction turn after an exact side-effect-free Code Mode failure. */
+export function resolveReplaySafeCodeModeErrorRetryInstruction(params: {
+  payloadCount: number;
+  aborted: boolean;
+  timedOut: boolean;
+  attempt: IncompleteTurnAttempt;
+}): string | null {
+  if (!isReplaySafeCodeModeToolError(params)) {
+    return null;
+  }
+  if (joinAssistantTexts(params.attempt.assistantTexts).length > 0) {
+    return null;
+  }
+  const assistant = params.attempt.currentAttemptAssistant ?? params.attempt.lastAssistant;
+  if (assistant?.stopReason === "toolUse") {
+    const lifecycle = params.attempt.itemLifecycle;
+    return lifecycle.activeCount === 0 &&
+      lifecycle.startedCount > 0 &&
+      lifecycle.completedCount === lifecycle.startedCount
+      ? REPLAY_SAFE_CODE_MODE_ERROR_RETRY_INSTRUCTION
+      : null;
+  }
+  if (
+    !isEmptyResponseAssistantTurn({
+      // A safe Code Mode failure can synthesize an "Exec failed" payload even
+      // when the model emitted no answer. Retry the model turn, not that wrapper text.
+      payloadCount: 0,
+      attempt: params.attempt,
+    })
+  ) {
+    return null;
+  }
+  return REPLAY_SAFE_CODE_MODE_ERROR_RETRY_INSTRUCTION;
+}
+
+function isReplaySafeCodeModeToolError(params: {
+  aborted: boolean;
+  timedOut: boolean;
+  attempt: IncompleteTurnAttempt;
+}): boolean {
+  const replayMetadata = resolveAttemptReplayMetadata(params.attempt);
+  if (
+    params.aborted ||
+    params.timedOut ||
+    params.attempt.codeModeEngaged !== true ||
+    !params.attempt.lastToolError ||
+    params.attempt.clientToolCalls ||
+    params.attempt.yieldDetected ||
+    params.attempt.didSendDeterministicApprovalPrompt ||
+    hasAcceptedSessionSpawn(params.attempt.acceptedSessionSpawns) ||
+    replayMetadata.hadPotentialSideEffects ||
+    !replayMetadata.replaySafe
+  ) {
+    return false;
+  }
+  const toolName = normalizeLowercaseStringOrEmpty(params.attempt.lastToolError.toolName);
+  if (toolName !== "exec" && toolName !== "wait") {
+    return false;
+  }
+  const latestMatchingFailure = params.attempt.toolMetas.findLast(
+    (entry) =>
+      normalizeLowercaseStringOrEmpty(entry.toolName) === toolName && entry.isError === true,
+  );
+  return Boolean(
+    latestMatchingFailure &&
+    latestMatchingFailure.replaySafe === true &&
+    latestMatchingFailure.sideEffectFree === true &&
+    latestMatchingFailure.codeModeRepairAllowed === true &&
+    latestMatchingFailure.asyncStarted !== true,
+  );
 }
 
 function shouldApplyNonVisibleTurnRetryGuard(params: {

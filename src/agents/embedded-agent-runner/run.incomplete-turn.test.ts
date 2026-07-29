@@ -27,10 +27,13 @@ import {
   buildAttemptReplayMetadata,
   DEFAULT_EMPTY_RESPONSE_RETRY_LIMIT,
   DEFAULT_REASONING_ONLY_RETRY_LIMIT,
+  NORMAL_CODE_MODE_CONTINUATION_INSTRUCTION,
+  RESTART_SAFE_CODE_MODE_CONTINUATION_INSTRUCTION,
   resolveEmptyResponseRetryInstruction,
   isIncompleteTerminalAssistantTurn,
   resolveIncompleteTurnPayloadText as resolveIncompleteTurnPayloadTextCore,
   resolveReasoningOnlyRetryInstruction,
+  resolveReplaySafeCodeModeErrorRetryInstruction,
   resolveReplayInvalidFlag,
   resolveRunLivenessState,
   resolveSilentToolResultReplyPayload,
@@ -91,6 +94,8 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
   function runAttemptCall(index: number): {
     prompt?: string;
     disableTools?: boolean;
+    forceRestartSafeTools?: boolean;
+    forceReadOnlyTools?: boolean;
     operation?: string;
     suppressNextUserMessagePersistence?: boolean;
     skipPreparedUserTurnMessage?: boolean;
@@ -104,6 +109,8 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
     return call[0] as {
       prompt?: string;
       disableTools?: boolean;
+      forceRestartSafeTools?: boolean;
+      forceReadOnlyTools?: boolean;
       operation?: string;
       suppressNextUserMessagePersistence?: boolean;
       skipPreparedUserTurnMessage?: boolean;
@@ -1158,6 +1165,11 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
     expect(secondCall.operation).toBe("settled-tool-finalization");
     expect(secondCall.suppressNextUserMessagePersistence).toBe(false);
     expect(secondCall.skipPreparedUserTurnMessage).toBe(true);
+    expect(result.meta?.toolSummary).toEqual({
+      calls: 1,
+      tools: ["write"],
+      failures: 0,
+    });
     expectWarnMessageWith("settled post-tool turn lacked a final answer");
   });
 
@@ -1266,6 +1278,142 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
     expect(runAttemptCall(1).disableTools).toBe(true);
     expectNoWarnMessageWith("empty response detected");
     expectWarnMessageWith("settled post-tool turn lacked a final answer");
+  });
+
+  it("keeps tools available when read-only Code Mode work stops before the remaining steps", async () => {
+    const emptyStopAssistant = {
+      role: "assistant",
+      stopReason: "stop",
+      provider: "huggingface",
+      model: "Qwen/Qwen3.5-9B",
+      content: [],
+    } as unknown as NonNullable<EmbeddedRunAttemptResult["lastAssistant"]>;
+    mockedClassifyFailoverReason.mockReturnValue(null);
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce(
+      makeAttemptResult({
+        assistantTexts: [],
+        codeModeEngaged: true,
+        toolMetas: [{ toolName: "exec", replaySafe: true }],
+        replayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
+        currentAttemptReplayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
+        itemLifecycle: { startedCount: 1, completedCount: 1, activeCount: 0 },
+        lastAssistant: emptyStopAssistant,
+        currentAttemptAssistant: emptyStopAssistant,
+      }),
+    );
+    const finalAssistant = {
+      role: "assistant",
+      stopReason: "stop",
+      provider: "huggingface",
+      model: "Qwen/Qwen3.5-9B",
+      content: [{ type: "text", text: "Finished the remaining write and verification." }],
+    } as unknown as NonNullable<EmbeddedRunAttemptResult["lastAssistant"]>;
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce(
+      makeAttemptResult({
+        assistantTexts: ["Finished the remaining write and verification."],
+        lastAssistant: finalAssistant,
+        currentAttemptAssistant: finalAssistant,
+        currentAttemptCompletedAssistant: finalAssistant,
+      }),
+    );
+    mockedBuildEmbeddedRunPayloads
+      .mockReturnValueOnce([])
+      .mockReturnValueOnce([{ text: "Finished the remaining write and verification." }]);
+
+    const result = await runEmbeddedAgent({
+      ...overflowBaseRunParams,
+      provider: "huggingface",
+      model: "Qwen/Qwen3.5-9B",
+      runId: "run-read-only-code-mode-continuation",
+    });
+
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(2);
+    expect(result.payloads?.[0]?.text).toBe("Finished the remaining write and verification.");
+    const secondCall = runAttemptCall(1);
+    expect(secondCall.prompt).toBe(NORMAL_CODE_MODE_CONTINUATION_INSTRUCTION);
+    expect(secondCall.disableTools).not.toBe(true);
+    expect(secondCall.forceRestartSafeTools).toBeFalsy();
+    expect(secondCall.operation).toBe("attempt");
+    expectWarnMessageWith("settled Code Mode work stopped before final verification");
+    expectNoWarnMessageWith("settled post-tool turn lacked a final answer");
+  });
+
+  it("keeps only read-only tools across mutating Code Mode verification retries", async () => {
+    const emptyStopAssistant = {
+      role: "assistant",
+      stopReason: "stop",
+      provider: "huggingface",
+      model: "Qwen/Qwen3.5-9B",
+      content: [],
+    } as unknown as NonNullable<EmbeddedRunAttemptResult["lastAssistant"]>;
+    mockedClassifyFailoverReason.mockReturnValue(null);
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce(
+      makeAttemptResult({
+        assistantTexts: [],
+        codeModeEngaged: true,
+        toolMetas: [{ toolName: "exec", replaySafe: true, sideEffectFree: false }],
+        replayMetadata: { hadPotentialSideEffects: true, replaySafe: true },
+        currentAttemptReplayMetadata: { hadPotentialSideEffects: true, replaySafe: true },
+        itemLifecycle: { startedCount: 1, completedCount: 1, activeCount: 0 },
+        lastAssistant: emptyStopAssistant,
+        currentAttemptAssistant: emptyStopAssistant,
+      }),
+    );
+    const finalAssistant = {
+      role: "assistant",
+      stopReason: "stop",
+      provider: "huggingface",
+      model: "Qwen/Qwen3.5-9B",
+      content: [{ type: "text", text: "Verified the completed write." }],
+    } as unknown as NonNullable<EmbeddedRunAttemptResult["lastAssistant"]>;
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce(
+      makeAttemptResult({
+        assistantTexts: [],
+        codeModeEngaged: true,
+        toolMetas: [{ toolName: "exec", replaySafe: true }],
+        replayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
+        currentAttemptReplayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
+        itemLifecycle: { startedCount: 1, completedCount: 1, activeCount: 0 },
+        lastAssistant: emptyStopAssistant,
+        currentAttemptAssistant: emptyStopAssistant,
+      }),
+    );
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce(
+      makeAttemptResult({
+        assistantTexts: ["Verified the completed write."],
+        lastAssistant: finalAssistant,
+        currentAttemptAssistant: finalAssistant,
+        currentAttemptCompletedAssistant: finalAssistant,
+      }),
+    );
+    mockedBuildEmbeddedRunPayloads
+      .mockReturnValueOnce([])
+      .mockReturnValueOnce([])
+      .mockReturnValueOnce([{ text: "Verified the completed write." }]);
+
+    const result = await runEmbeddedAgent({
+      ...overflowBaseRunParams,
+      provider: "huggingface",
+      model: "Qwen/Qwen3.5-9B",
+      runId: "run-mutating-code-mode-continuation",
+    });
+
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(3);
+    expect(result.payloads?.[0]?.text).toBe("Verified the completed write.");
+    const secondCall = runAttemptCall(1);
+    expect(secondCall.prompt).toBe(RESTART_SAFE_CODE_MODE_CONTINUATION_INSTRUCTION);
+    expect(secondCall.disableTools).not.toBe(true);
+    expect(secondCall.forceRestartSafeTools).toBeFalsy();
+    expect(secondCall.forceReadOnlyTools).toBe(true);
+    expect(secondCall.operation).toBe("attempt");
+    const thirdCall = runAttemptCall(2);
+    expect(thirdCall.prompt).toBe(RESTART_SAFE_CODE_MODE_CONTINUATION_INSTRUCTION);
+    expect(thirdCall.disableTools).not.toBe(true);
+    expect(thirdCall.forceRestartSafeTools).toBeFalsy();
+    expect(thirdCall.forceReadOnlyTools).toBe(true);
+    expect(thirdCall.operation).toBe("attempt");
+    expectWarnMessageWith("settled Code Mode work stopped before final verification");
+    expectNoWarnMessageWith("settled post-tool turn lacked a final answer");
   });
 
   it.each([
@@ -3731,6 +3879,79 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
     });
 
     expect(incompleteTurnText).toBeNull();
+  });
+
+  it("does not retry a replay-safe Code Mode failure after a mutation", () => {
+    const assistant = {
+      role: "assistant",
+      stopReason: "toolUse",
+      provider: "huggingface",
+      model: "Qwen/Qwen3.5-9B",
+      content: [],
+    } as unknown as EmbeddedRunAttemptResult["lastAssistant"];
+
+    expect(
+      resolveReplaySafeCodeModeErrorRetryInstruction({
+        payloadCount: 0,
+        aborted: false,
+        timedOut: false,
+        attempt: makeAttemptResult({
+          assistantTexts: [],
+          codeModeEngaged: true,
+          toolMetas: [
+            {
+              toolName: "exec",
+              isError: true,
+              replaySafe: true,
+              sideEffectFree: false,
+            },
+          ],
+          replayMetadata: { hadPotentialSideEffects: true, replaySafe: true },
+          itemLifecycle: { startedCount: 1, completedCount: 1, activeCount: 0 },
+          lastToolError: { toolName: "exec", error: "verification failed after write" },
+          lastAssistant: assistant,
+          currentAttemptAssistant: assistant,
+        }),
+      }),
+    ).toBeNull();
+  });
+
+  it("retries an explicitly side-effect-free Code Mode exec failure", () => {
+    const assistant = {
+      role: "assistant",
+      stopReason: "toolUse",
+      provider: "huggingface",
+      model: "Qwen/Qwen3.5-9B",
+      content: [],
+    } as unknown as EmbeddedRunAttemptResult["lastAssistant"];
+
+    expect(
+      resolveReplaySafeCodeModeErrorRetryInstruction({
+        payloadCount: 0,
+        aborted: false,
+        timedOut: false,
+        attempt: makeAttemptResult({
+          assistantTexts: [],
+          codeModeEngaged: true,
+          toolMetas: [
+            {
+              toolName: "exec",
+              isError: true,
+              replaySafe: true,
+              sideEffectFree: true,
+              codeModeRepairAllowed: true,
+            },
+          ],
+          replayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
+          itemLifecycle: { startedCount: 1, completedCount: 1, activeCount: 0 },
+          lastToolError: { toolName: "exec", error: "read failed" },
+          lastAssistant: assistant,
+          currentAttemptAssistant: assistant,
+        }),
+      }),
+    ).toBe(
+      "The prior Code Mode exec failed without side effects. Inspect the prior error and tool output, then retry with changed code using injected global tools only. If text parsing failed, inspect raw `.content` instead of assuming JSON or quoted values. Do not use import, require, process, fs, or absolute workspace paths.",
+    );
   });
 
   it("does not retry reasoning-only GPT turns after side effects", () => {

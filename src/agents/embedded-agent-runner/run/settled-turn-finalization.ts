@@ -10,6 +10,11 @@ import {
   mergeUsageIntoAccumulator,
 } from "../usage-accumulator.js";
 import { runEmbeddedSettledTurnFinalizationWithBackend } from "./backend.js";
+import {
+  NORMAL_CODE_MODE_CONTINUATION_INSTRUCTION,
+  RESTART_SAFE_CODE_MODE_CONTINUATION_INSTRUCTION,
+  resolveCodeModeContinuationToolPolicy,
+} from "./incomplete-turn.js";
 import { withEmbeddedRunLaneProgressHeartbeat } from "./lane-runtime.js";
 import {
   resolveEmbeddedRunAttemptTerminalOutcome,
@@ -69,6 +74,8 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
     lastTurnTotal,
     terminalState: initial.terminalState,
   });
+  const settledAttemptToolSummary = prepared.attemptToolSummary;
+  const codeModeContinuationToolPolicy = resolveCodeModeContinuationToolPolicy(initial.attempt);
   const prompt = resolveSettledTurnFinalizationRequest({
     runParams: input.terminalBase.runParams,
     attempt,
@@ -82,6 +89,7 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
     terminalState: initial.terminalState,
     settledTurnFinalizationAvailable:
       typeof input.finalization.harness.finalizeSettledTurn === "function",
+    toolCapableContinuationAvailable: codeModeContinuationToolPolicy !== null,
   });
   if (!prompt) {
     return {
@@ -91,6 +99,26 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
       lastTurnTotal,
       finalizationAttempted: false,
       finalizationSucceeded: false,
+      toolCapableContinuation: null,
+    };
+  }
+  if (codeModeContinuationToolPolicy) {
+    // Keep unfinished Code Mode work on the ordinary continuation path.
+    // Mutating turns expose only host-enforced read-only tools.
+    return {
+      ...initial,
+      prepared,
+      lastRunPromptUsage,
+      lastTurnTotal,
+      finalizationAttempted: false,
+      finalizationSucceeded: false,
+      toolCapableContinuation: {
+        instruction:
+          codeModeContinuationToolPolicy === "read-only"
+            ? RESTART_SAFE_CODE_MODE_CONTINUATION_INSTRUCTION
+            : NORMAL_CODE_MODE_CONTINUATION_INSTRUCTION,
+        forceReadOnlyTools: codeModeContinuationToolPolicy === "read-only",
+      },
     };
   }
 
@@ -120,7 +148,7 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
       }),
       signalOwnedInterruption: false,
     };
-    prepared = prepareEmbeddedRunTerminal({
+    const finalizedPrepared = prepareEmbeddedRunTerminal({
       ...input.terminalBase,
       attempt,
       currentAttemptCompletedAssistant: attempt.currentAttemptCompletedAssistant,
@@ -130,6 +158,12 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
       lastTurnTotal,
       terminalState,
     });
+    prepared = {
+      ...finalizedPrepared,
+      // The finalizer intentionally runs without tools, but the completed
+      // outer calls still belong to the same run's execution trace.
+      attemptToolSummary: finalizedPrepared.attemptToolSummary ?? settledAttemptToolSummary,
+    };
     return {
       attempt,
       attemptAssistant: attempt.currentAttemptAssistant,
@@ -143,6 +177,7 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
       lastTurnTotal,
       finalizationAttempted: true,
       finalizationSucceeded: true,
+      toolCapableContinuation: null,
     };
   } catch (error) {
     log.warn(
@@ -156,6 +191,7 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
       lastTurnTotal,
       finalizationAttempted: true,
       finalizationSucceeded: false,
+      toolCapableContinuation: null,
     };
   }
 }

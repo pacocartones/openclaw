@@ -1,7 +1,9 @@
 /**
  * Accumulates and normalizes per-call token usage across embedded runs.
  */
+import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { NormalizedUsage } from "../usage.js";
+import type { ToolSummaryTrace } from "./types.js";
 
 export type UsageAccumulator = {
   input: number;
@@ -15,6 +17,8 @@ export type UsageAccumulator = {
    * Kept beside token totals so retried attempts stay counted like their usage.
    */
   assistantTurns: number;
+  /** True once any attempt in the run engaged the Code Mode control surface. */
+  codeModeEngaged?: boolean;
   /**
    * Cumulative inner bridge calls across attempts. Present only once an
    * attempt reported a tool-search/code-mode catalog, so catalog-less runs
@@ -24,7 +28,10 @@ export type UsageAccumulator = {
     search: number;
     describe: number;
     call: number;
+    sequence?: string[];
   };
+  /** Cumulative outer tool calls across continuation and fallback attempts. */
+  toolSummary?: ToolSummaryTrace;
 };
 
 export const createUsageAccumulator = (): UsageAccumulator => ({
@@ -82,10 +89,43 @@ export const mergeAttemptRunStatsIntoAccumulator = (
   target: UsageAccumulator,
   attempt: {
     assistantTurns?: number;
-    bridgeCalls?: { search: number; describe: number; call: number };
+    bridgeCalls?: { search: number; describe: number; call: number; sequence?: string[] };
+    codeModeEngaged?: boolean;
+    toolMetas?: Array<{ toolName: string; isError?: boolean }>;
+    lastToolError?: unknown;
   },
 ) => {
   target.assistantTurns += attempt.assistantTurns ?? 0;
+  if (attempt.codeModeEngaged === true) {
+    target.codeModeEngaged = true;
+  }
+  const toolMetas = attempt.toolMetas ?? [];
+  const fallbackHadFailure = attempt.lastToolError !== undefined;
+  if (toolMetas.length > 0 || fallbackHadFailure) {
+    const previous = target.toolSummary;
+    const tools = previous ? [...previous.tools] : [];
+    const seen = new Set(tools);
+    for (const entry of toolMetas) {
+      const toolName = normalizeOptionalString(entry.toolName);
+      if (toolName && !seen.has(toolName)) {
+        seen.add(toolName);
+        tools.push(toolName);
+      }
+    }
+    const fallbackToolName = normalizeOptionalString(
+      (attempt.lastToolError as { toolName?: unknown } | undefined)?.toolName,
+    );
+    if (fallbackToolName && !seen.has(fallbackToolName)) {
+      tools.push(fallbackToolName);
+    }
+    const failedCalls = toolMetas.filter((entry) => entry.isError === true).length;
+    const metadataMissingForFailure = fallbackHadFailure && toolMetas.length === 0;
+    target.toolSummary = {
+      calls: (previous?.calls ?? 0) + toolMetas.length + Number(metadataMissingForFailure),
+      tools,
+      failures: (previous?.failures ?? 0) + (failedCalls || Number(fallbackHadFailure)),
+    };
+  }
   if (!attempt.bridgeCalls) {
     return;
   }
@@ -93,6 +133,9 @@ export const mergeAttemptRunStatsIntoAccumulator = (
   bridgeCalls.search += attempt.bridgeCalls.search;
   bridgeCalls.describe += attempt.bridgeCalls.describe;
   bridgeCalls.call += attempt.bridgeCalls.call;
+  if (attempt.bridgeCalls.sequence) {
+    bridgeCalls.sequence = [...(bridgeCalls.sequence ?? []), ...attempt.bridgeCalls.sequence];
+  }
   target.bridgeCalls = bridgeCalls;
 };
 

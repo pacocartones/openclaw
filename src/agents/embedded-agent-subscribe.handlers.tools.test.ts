@@ -1522,6 +1522,176 @@ describe("handleToolExecutionEnd mutating failure recovery", () => {
     });
   });
 
+  it("clears a side-effect-free Code Mode failure after a corrected exec succeeds", async () => {
+    const { ctx } = createTestContext();
+
+    await executeTool(ctx, {
+      toolName: "exec",
+      toolCallId: "tool-code-mode-invalid",
+      args: { code: "import fs from 'fs';" },
+      isError: true,
+      result: {
+        details: {
+          status: "failed",
+          code: "invalid_input",
+          failurePhase: "input",
+          bridgeDispatchStarted: false,
+          repair: { allowed: true, remainingAttempts: 1 },
+        },
+      },
+    });
+
+    expect(ctx.state.lastToolError).toMatchObject({
+      toolName: "exec",
+      mutatingAction: false,
+    });
+    expect(ctx.state.replayState).toEqual({
+      replayInvalid: false,
+      hadPotentialSideEffects: false,
+    });
+
+    await executeTool(ctx, {
+      toolName: "exec",
+      toolCallId: "tool-code-mode-corrected",
+      args: { code: 'return await tools.read({ path: "facts.txt" });' },
+      isError: false,
+      result: { details: { status: "completed", sideEffectFree: true } },
+    });
+
+    expect(ctx.state.lastToolError).toBeUndefined();
+    expect(ctx.state.replayState).toEqual({
+      replayInvalid: false,
+      hadPotentialSideEffects: false,
+    });
+  });
+
+  it("keeps a read-only Code Mode bridge failure replay-safe", async () => {
+    const { ctx } = createTestContext();
+
+    await executeTool(ctx, {
+      toolName: "exec",
+      toolCallId: "tool-code-mode-read-failure",
+      args: {
+        code: 'const text = await tools.read({ path: "facts.txt" }); throw new Error(text);',
+      },
+      isError: true,
+      result: {
+        details: {
+          status: "failed",
+          code: "internal_error",
+          failurePhase: "bridge",
+          bridgeDispatchStarted: true,
+          sideEffectFree: true,
+          repair: { allowed: true, remainingAttempts: 1 },
+        },
+      },
+    });
+
+    expect(ctx.state.toolMetas).toContainEqual({
+      toolName: "exec",
+      meta: undefined,
+      replaySafe: true,
+      sideEffectFree: true,
+      codeModeRepairAllowed: true,
+      isError: true,
+    });
+    expect(ctx.state.lastToolError).toMatchObject({
+      toolName: "exec",
+      mutatingAction: false,
+    });
+    expect(ctx.state.replayState).toEqual({
+      replayInvalid: false,
+      hadPotentialSideEffects: false,
+    });
+  });
+
+  it("does not promote a parked replay-unsafe Code Mode call as side-effect-free", async () => {
+    const { ctx } = createTestContext();
+
+    await executeTool(ctx, {
+      toolName: "exec",
+      toolCallId: "tool-code-mode-parked-mutation",
+      args: { code: 'return await tools.write({ path: "result.txt", content: "done" });' },
+      isError: false,
+      result: {
+        details: {
+          status: "waiting",
+          replaySafe: false,
+          sideEffectFree: true,
+        },
+      },
+    });
+
+    expect(ctx.state.toolMetas).toContainEqual({
+      toolName: "exec",
+      meta: undefined,
+      replaySafe: false,
+      sideEffectFree: true,
+    });
+    expect(ctx.state.replayState).toEqual({
+      replayInvalid: true,
+      hadPotentialSideEffects: true,
+    });
+  });
+
+  it("keeps a parked replay-safe read-only Code Mode call replay-safe", async () => {
+    const { ctx } = createTestContext();
+
+    await executeTool(ctx, {
+      toolName: "exec",
+      toolCallId: "tool-code-mode-parked-read",
+      args: { code: 'return await tools.read({ path: "facts.txt" });' },
+      isError: false,
+      result: {
+        details: {
+          status: "waiting",
+          replaySafe: true,
+          sideEffectFree: true,
+        },
+      },
+    });
+
+    expect(ctx.state.toolMetas).toContainEqual({
+      toolName: "exec",
+      meta: undefined,
+      replaySafe: true,
+      sideEffectFree: true,
+    });
+    expect(ctx.state.replayState).toEqual({
+      replayInvalid: false,
+      hadPotentialSideEffects: false,
+    });
+  });
+
+  it("records a completed Code Mode mutation as side-effectful", async () => {
+    const { ctx } = createTestContext();
+
+    await executeTool(ctx, {
+      toolName: "exec",
+      toolCallId: "tool-code-mode-replay-safe-mutation",
+      args: { code: 'return await tools.write({ path: "result.txt", content: "done" });' },
+      isError: false,
+      result: {
+        details: {
+          status: "completed",
+          replaySafe: true,
+          sideEffectFree: false,
+        },
+      },
+    });
+
+    expect(ctx.state.toolMetas).toContainEqual({
+      toolName: "exec",
+      meta: undefined,
+      replaySafe: false,
+      sideEffectFree: false,
+    });
+    expect(ctx.state.replayState).toEqual({
+      replayInvalid: true,
+      hadPotentialSideEffects: true,
+    });
+  });
+
   it("keeps unclassified interactive tool calls replay-invalid", async () => {
     const { ctx } = createTestContext();
 

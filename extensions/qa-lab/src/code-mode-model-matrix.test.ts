@@ -130,7 +130,7 @@ describe("Code Mode model matrix classification", () => {
     final: "CM-EXPECTED",
     payloads: [{ text: "CM-EXPECTED" }],
     codeModeEngaged: true,
-    bridgeCalls: { search: 0, describe: 0, call: 1 },
+    bridgeCalls: { search: 0, describe: 0, call: 1, sequence: ["read"] },
     toolSummary: { calls: 1, tools: ["exec"] },
     model: "qwen3.5:9b",
     provider: "ollama",
@@ -291,6 +291,48 @@ describe("Code Mode model matrix classification", () => {
         task: "read",
       }).failureCategory,
     ).toBe("tool_execution");
+  });
+
+  it("requires every nested step in the dependent read-write-read scenario", () => {
+    const base = {
+      ...successEnvelope,
+      bridgeCalls: {
+        search: 0,
+        describe: 0,
+        call: 3,
+        sequence: ["read", "write", "read"],
+      },
+      toolSummary: { calls: 2, tools: ["exec"] },
+    };
+    const classify = (sequence: string[]) =>
+      classifyCodeModeMatrixCell({
+        diagnostics: "",
+        effectPassed: true,
+        envelope: {
+          ...base,
+          bridgeCalls: { search: 0, describe: 0, call: sequence.length, sequence },
+        },
+        expected: "CM-EXPECTED",
+        mode: "code",
+        model: "ollama/qwen3.5:9b",
+        task: "dependent-read-write",
+      });
+
+    expect(classify(["read", "write"])).toMatchObject({
+      failureCategory: "tool_execution",
+      oracle: { toolExecution: false },
+      passed: false,
+    });
+    expect(classify(["read", "read", "write"])).toMatchObject({
+      failureCategory: "tool_execution",
+      oracle: { toolExecution: false },
+      passed: false,
+    });
+    expect(classify(["search", "read", "write", "read"])).toMatchObject({
+      failureCategory: null,
+      oracle: { toolExecution: true },
+      passed: true,
+    });
   });
 
   it("rejects forced Code Mode runs that never engaged", () => {

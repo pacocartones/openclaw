@@ -68,79 +68,118 @@ export type { CodeModeFailureCode, CodeModeHeadlessResult } from "./code-mode-ru
 
 type CodeModeToolContext = ToolSearchToolContext;
 
-const MAX_CODE_MODE_CATALOG_INDEX_CHARS = 8_000;
+const MAX_CODE_MODE_METHOD_INDEX_CHARS = 1_600;
+const MAX_CODE_MODE_OUTPUT_HINT_CHARS = 96;
+const CODE_MODE_DIRECT_METHOD_PATTERN = /^[A-Za-z_$][A-Za-z0-9_$]*$/u;
+const CODE_MODE_RESERVED_METHOD_NAMES = new Set([
+  "search",
+  "describe",
+  "call",
+  "callValue",
+  CODE_MODE_EXEC_TOOL_NAME,
+  CODE_MODE_WAIT_TOOL_NAME,
+]);
+const CODE_MODE_METHOD_INDEX_HEADING =
+  "Enabled direct methods inside code (await calls; short declared outputs follow `->`):";
 
-const CODE_MODE_CATALOG_INDEX_HEADING = [
-  "OpenClaw/plugin tool quick index (exact ids; descriptions are intentionally deferred):",
-  "Each line is `id input -> output`; `-> ?` means unknown.",
-  "OUTPUT DECLARED RULE: use declared fields for dependent calls in the first exec.",
-  "OUTPUT UNKNOWN RULE: return the raw tool value unchanged; inspect or map it only in a later exec.",
-].join("\n");
-
-function codeModeCatalogIndexFooter(included: number, total: number): string {
+function codeModeMethodIndexFooter(included: number, total: number): string {
   const omitted = total - included;
   return omitted > 0
-    ? `${omitted} additional OpenClaw/plugin tools omitted from this prompt index. Use ALL_TOOLS or tools.search inside exec to find them.`
-    : "Use these exact ids with tools.callValue; use ALL_TOOLS or tools.search inside exec when lookup is ambiguous.";
+    ? `${omitted} more direct methods omitted. Discover them with ALL_TOOLS or tools.search(query).`
+    : "";
 }
 
-function renderCodeModeCatalogIndex(lines: readonly string[], total: number): string {
-  return [
-    CODE_MODE_CATALOG_INDEX_HEADING,
-    ...lines,
-    "",
-    codeModeCatalogIndexFooter(lines.length, total),
-  ].join("\n");
+function renderCodeModeMethodIndex(lines: readonly string[], total: number): string {
+  const footer = codeModeMethodIndexFooter(lines.length, total);
+  return [CODE_MODE_METHOD_INDEX_HEADING, ...lines, ...(footer ? ["", footer] : [])].join("\n");
 }
 
-function formatCodeModeCatalogIndex(catalog: readonly ToolSearchCatalogEntry[]): string {
-  const lines = catalog
-    .filter((entry) => entry.source === "openclaw")
+function collectCodeModeDirectCatalogEntries(
+  catalog: readonly ToolSearchCatalogEntry[],
+): ToolSearchCatalogEntry[] {
+  const nameCounts = new Map<string, number>();
+  for (const entry of catalog) {
+    if (!CODE_MODE_DIRECT_METHOD_PATTERN.test(entry.name)) {
+      continue;
+    }
+    nameCounts.set(entry.name, (nameCounts.get(entry.name) ?? 0) + 1);
+  }
+  return catalog.filter(
+    (entry) =>
+      entry.source === "openclaw" &&
+      nameCounts.get(entry.name) === 1 &&
+      !CODE_MODE_RESERVED_METHOD_NAMES.has(entry.name),
+  );
+}
+
+export function collectCodeModeDirectToolNames(
+  catalog: readonly ToolSearchCatalogEntry[],
+): Set<string> {
+  return new Set(collectCodeModeDirectCatalogEntries(catalog).map((entry) => entry.name));
+}
+
+export function collectCodeModeDirectToolSchemas(
+  catalog: readonly ToolSearchCatalogEntry[],
+): Map<string, unknown> {
+  return new Map(
+    collectCodeModeDirectCatalogEntries(catalog)
+      .filter((entry) => entry.parameters !== undefined)
+      .map((entry) => [entry.name, entry.parameters]),
+  );
+}
+
+function formatCodeModeMethodIndex(catalog: readonly ToolSearchCatalogEntry[]): string {
+  const lines = collectCodeModeDirectCatalogEntries(catalog)
     .map((entry) => compactToolSearchCatalogEntry(entry))
-    // Declared-output entries sort first so byte truncation drops `-> ?`
-    // lines, which stay fully discoverable through ALL_TOOLS, before it drops
-    // contracts the model can one-pass on. Deterministic within each tier.
-    .toSorted((a, b) => (a.output ? 0 : 1) - (b.output ? 0 : 1) || a.id.localeCompare(b.id))
-    .map(
-      (entry) =>
-        `- ${JSON.stringify(entry.id)} ${entry.input ?? "unknown"} -> ${entry.output ?? "?"}`,
-    );
+    .map((entry) => {
+      const input = entry.input && entry.input !== "unknown" ? entry.input : "input?: unknown";
+      const output =
+        entry.output && entry.output.length <= MAX_CODE_MODE_OUTPUT_HINT_CHARS
+          ? ` -> ${entry.output}`
+          : "";
+      return {
+        line: `- tools.${entry.name}(${input})${output}`,
+        name: entry.name,
+      };
+    })
+    // Prefer breadth: short callable signatures teach more exact method names
+    // than a few verbose result contracts under the same model-facing budget.
+    .toSorted((a, b) => a.line.length - b.line.length || a.name.localeCompare(b.name))
+    .map((entry) => entry.line);
   if (lines.length === 0) {
     return "";
   }
-  const fullIndex = renderCodeModeCatalogIndex(lines, lines.length);
-  if (fullIndex.length <= MAX_CODE_MODE_CATALOG_INDEX_CHARS) {
+  const fullIndex = renderCodeModeMethodIndex(lines, lines.length);
+  if (fullIndex.length <= MAX_CODE_MODE_METHOD_INDEX_CHARS) {
     return fullIndex;
   }
 
-  // Greedily pack lines in the deterministic sorted order, skipping any single
-  // line too large to fit rather than dropping the whole tail after it. A prefix
-  // cut let one oversized entry — a pathological plugin id or input hint — blank
-  // the entire index; skipping it keeps every other declared contract visible
-  // and fits more of them when the declared tier alone overflows. Skipped
-  // entries stay discoverable through ALL_TOOLS, and the stable input order
-  // keeps prompt bytes deterministic for provider caches.
+  // Keep the signature budget deterministic while skipping pathological lines.
+  // Every omitted method remains available on `tools` and discoverable at runtime.
   const included: string[] = [];
   let includedLineLength = 0;
   for (const line of lines) {
     const candidateLineLength = includedLineLength + 1 + line.length;
     const candidateLength =
-      CODE_MODE_CATALOG_INDEX_HEADING.length +
+      CODE_MODE_METHOD_INDEX_HEADING.length +
       candidateLineLength +
       2 +
-      codeModeCatalogIndexFooter(included.length + 1, lines.length).length;
-    if (candidateLength <= MAX_CODE_MODE_CATALOG_INDEX_CHARS) {
+      codeModeMethodIndexFooter(included.length + 1, lines.length).length;
+    if (candidateLength <= MAX_CODE_MODE_METHOD_INDEX_CHARS) {
       included.push(line);
       includedLineLength = candidateLineLength;
     }
   }
-  return renderCodeModeCatalogIndex(included, lines.length);
+  return renderCodeModeMethodIndex(included, lines.length);
 }
 
 function createCodeModeExecDescription(
   ctx: CodeModeToolContext,
   catalog?: readonly ToolSearchCatalogEntry[],
 ): string {
+  const directMethodNames = catalog ? collectCodeModeDirectToolNames(catalog) : new Set<string>();
+  const hasRead = directMethodNames.has("read");
+  const hasWrite = directMethodNames.has("write");
   const namespacePrompt = describeCodeModeNamespacesForPrompt(catalog);
   // A known run catalog with neither MCP nor swarm has no virtual API files.
   const catalogKnown = catalog !== undefined;
@@ -156,24 +195,52 @@ function createCodeModeExecDescription(
     ? " Swarm globals `agents.run`, `phase`, and `log` are available; read `agents.d.ts` for types and orchestration idioms."
     : "";
   const nodesGuidance =
-    "\n- nodes: paired Gateway nodes; nodes.list(), (await nodes.get(id)).invoke(command, params)\n";
+    !catalogKnown || catalog.some((entry) => entry.name === "nodes")
+      ? "\n- nodes: paired Gateway nodes; nodes.list(), (await nodes.get(id)).invoke(command, params)\n"
+      : "";
   const skillsGuidance = ctx.codeModeSkills?.length
     ? " Skills are available through the async `skills` global: use `await skills.list()` and `await skills.read(name)`."
     : "";
-  const catalogIndex = catalog ? formatCodeModeCatalogIndex(catalog) : "";
+  const methodIndex = catalog ? formatCodeModeMethodIndex(catalog) : "";
+  const writeVerificationGuidance =
+    hasRead && hasWrite ? " For write verification, include write and read in one cell." : "";
+  const readGuidance = hasRead ? ' Read files with `await tools.read({ path: "notes.txt" })`.' : "";
   return (
-    "Run JavaScript or TypeScript in OpenClaw code mode. Use `return` to pass the final value back; otherwise the result is `null`. Quick-index arrows show trusted declared output hints; `-> ?` means never guess result field names. For declared fields, process them in the first exec; do not spend another exec inspecting them. Perform dependent reads, checks, and follow-up calls in order; parallelize independent work only. For an unknown output, including a final dependent call after declared-output calls, return the raw tool value unchanged; do not wrap it in the requested answer shape or guess fields; filter or map it only in a later exec. Nested calls enforce normal tool policy and approvals. `ALL_TOOLS` is the complete compact catalog. Select exact ids directly or with `tools.search(query: string, options?)`; use `tools.describe(id: string)` only when needed. Never invent or transform a tool id. `tools.callValue(id: string, args?)` returns its JSON value directly; `tools.call(id: string, args?)` preserves `{ tool, result }`. Example: `const hit = ALL_TOOLS.find((entry) => entry.description.includes('weather')) ?? (await tools.search('weather'))[0]; return await tools.callValue(hit.id, {});`. Node.js modules and `require`/`import` are NOT available; use enabled catalog tools allowed by policy for shell, file, network, or external actions." +
+    "Use only injected Code Mode globals; Node.js modules, shell, `require`, `import`, `process`, and `fs` are unavailable. Never skip a requested verification or answer from a known value before its tool call." +
+    writeVerificationGuidance +
+    readGuidance +
+    " Text results expose `.content`, string methods, and `.field(name)` for `key=value` or `key: value`. Sandboxed `console` writes tool output. Explicitly `return` the final value; a trailing guest tool call or local result expression is auto-returned. Prefer enabled direct methods on `tools`. Use workspace-relative paths, never `/workspace`. Await dependent calls in order; use `Promise.all` only for independent work. If a direct method is unavailable, use ALL_TOOLS or `await tools.search(query)`, then `tools.callValue(id, args)`. Never invent or transform ids. Return unknown result shapes raw. Nested calls keep normal policy and approvals." +
     apiGuidance +
     mcpGuidance +
     swarmGuidance +
     nodesGuidance +
     skillsGuidance +
-    ' The `language` field accepts only "javascript" or "typescript"; do not pass "bash", "shell", or other values.' +
-    " The `code` field contains JavaScript or TypeScript, never a shell command. " +
-    "For shell or file operations, call the exact catalog tool from guest JavaScript; do not retry failed shell source." +
     (namespacePrompt ? `\n\n${namespacePrompt}` : "") +
-    (catalogIndex ? `\n\n${catalogIndex}` : "")
+    (methodIndex ? `\n\n${methodIndex}` : "")
   );
+}
+
+function createCodeModeCodeDescription(catalog?: readonly ToolSearchCatalogEntry[]): string {
+  const directMethodNames = catalog ? collectCodeModeDirectToolNames(catalog) : new Set<string>();
+  if (directMethodNames.has("read") && directMethodNames.has("write")) {
+    return 'Obey every step. Verify writes: await tools.write(a); return await tools.read(b). Text: r.content or r.field("key"). No imports/process/fs.';
+  }
+  if (directMethodNames.has("read")) {
+    return 'Obey every step. Read: const r=await tools.read(a); return r.content or r.field("key"). No imports/process/fs.';
+  }
+  return "Obey every step with enabled tools. Await calls; return the final value. No imports/process/fs.";
+}
+
+function setCodeModeCodeDescription(
+  tool: AnyAgentTool,
+  catalog?: readonly ToolSearchCatalogEntry[],
+): void {
+  const parameters = tool.parameters as {
+    properties?: { code?: { description?: string } };
+  };
+  if (parameters.properties?.code) {
+    parameters.properties.code.description = createCodeModeCodeDescription(catalog);
+  }
 }
 
 export function createCodeModeTools(ctx: CodeModeToolContext): AnyAgentTool[] {
@@ -185,17 +252,14 @@ export function createCodeModeTools(ctx: CodeModeToolContext): AnyAgentTool[] {
       // `command` stays runtime-only for hook compatibility. Requiring the sole
       // model-facing field prevents schema-valid empty calls from constrained models.
       code: Type.String({
-        description:
-          'Required JS/TS; no Python, shell, `require`, `import`. Use explicit `return value`; a trailing expression is discarded and yields `null`. Use `callValue`, not `call`, for data; `call` wraps it under `.result`. Core text reads: `{kind:"text",content:string}`; use `.content`. Unknown format: return it first, then parse it in a later exec; never guess separators. Example: `const file=await tools.callValue("openclaw:core:read", { path: "notes.txt" }); if(file.kind!=="text") return file; return file.content;`. Use exact ids from `ALL_TOOLS` or `tools.search(query)`; never invent ids or parallelize dependent calls.',
+        description: createCodeModeCodeDescription(),
       }),
       language: optionalStringEnum(["javascript", "typescript"] as const, {
-        description:
-          'Source language. Must be "javascript" or "typescript". Defaults to javascript.',
+        description: "Defaults to javascript.",
       }),
       restartSafe: Type.Optional(
         Type.Boolean({
-          description:
-            "Set true only when every catalog call is explicitly replay-safe and OpenClaw may reconstruct the work after a gateway restart. Leave unset for ordinary calls; true rejects unmarked, side-effecting, or namespace tool calls.",
+          description: "Only for workflows whose nested calls are all explicitly replay-safe.",
         }),
       ),
     }),
@@ -217,7 +281,11 @@ export function createCodeModeTools(ctx: CodeModeToolContext): AnyAgentTool[] {
               executionContext?.assistantMessage.responseId?.trim() ||
               executionContext?.assistantMessage.turnId?.trim(),
             language: input.language,
-            restartSafe: ctx.forceRestartSafeTools === true || input.restartSafe,
+            restartSafe:
+              ctx.forceRestartSafeTools === true ||
+              ctx.forceReadOnlyTools === true ||
+              input.restartSafe,
+            readOnly: ctx.forceReadOnlyTools === true,
             signal,
             onUpdate,
           }),
@@ -245,6 +313,9 @@ export function createCodeModeTools(ctx: CodeModeToolContext): AnyAgentTool[] {
             toolCallId,
             ctx,
             runId: readRunId(args),
+            requireRestartSafe:
+              ctx.forceRestartSafeTools === true || ctx.forceReadOnlyTools === true,
+            requireReadOnly: ctx.forceReadOnlyTools === true,
             signal,
             onUpdate,
           }),
@@ -318,6 +389,7 @@ export function applyCodeModeCatalog(params: {
         },
         visibleCatalog,
       );
+      setCodeModeCodeDescription(tool, visibleCatalog);
     }
   }
   return compacted;

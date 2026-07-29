@@ -33,9 +33,13 @@ type HFModelEntry = {
   architecture?: {
     input_modalities?: string[];
   };
-  providers?: Array<{
-    context_length?: number;
-  }>;
+  providers?: unknown[];
+};
+
+type HFProviderEntry = {
+  context_length?: number;
+  status?: string;
+  supports_tools?: boolean;
 };
 
 type OpenAIListModelsResponse = {
@@ -88,6 +92,41 @@ export function buildHuggingfaceModelDefinition(
     cost: model.cost,
     contextWindow: model.contextWindow,
     maxTokens: model.maxTokens,
+    ...(model.compat ? { compat: model.compat } : {}),
+  };
+}
+
+function normalizeHuggingfaceProviders(providers: HFModelEntry["providers"]): HFProviderEntry[] {
+  if (!Array.isArray(providers)) {
+    return [];
+  }
+  return providers.filter(
+    (provider): provider is HFProviderEntry =>
+      provider !== null && typeof provider === "object" && !Array.isArray(provider),
+  );
+}
+
+function resolveHuggingfaceToolSupport(providers: HFModelEntry["providers"]): boolean | undefined {
+  const liveProviders = normalizeHuggingfaceProviders(providers).filter(
+    (provider) => provider.status === undefined || provider.status === "live",
+  );
+  if (liveProviders.some((provider) => provider.supports_tools === true)) {
+    return true;
+  }
+  return liveProviders.some((provider) => provider.supports_tools === false) ? false : undefined;
+}
+
+function applyHuggingfaceToolSupport(
+  model: ModelDefinitionConfig,
+  providers: HFModelEntry["providers"],
+): ModelDefinitionConfig {
+  const supportsTools = resolveHuggingfaceToolSupport(providers);
+  if (supportsTools === undefined) {
+    return model;
+  }
+  return {
+    ...model,
+    compat: { ...model.compat, supportsTools },
   };
 }
 
@@ -185,7 +224,12 @@ export async function discoverHuggingfaceModels(
 
         const catalogEntry = catalogById.get(id);
         if (catalogEntry) {
-          models.push(buildHuggingfaceModelDefinition(catalogEntry));
+          models.push(
+            applyHuggingfaceToolSupport(
+              buildHuggingfaceModelDefinition(catalogEntry),
+              entry.providers,
+            ),
+          );
           continue;
         }
 
@@ -194,19 +238,25 @@ export async function discoverHuggingfaceModels(
         const modalities = entry.architecture?.input_modalities;
         const input: Array<"text" | "image"> =
           Array.isArray(modalities) && modalities.includes("image") ? ["text", "image"] : ["text"];
-        const providers = Array.isArray(entry.providers) ? entry.providers : [];
+        const providers = normalizeHuggingfaceProviders(entry.providers);
         const providerWithContext = providers.find(
           (provider) => typeof provider?.context_length === "number" && provider.context_length > 0,
         );
-        models.push({
-          id,
-          name,
-          reasoning: inferred.reasoning,
-          input,
-          cost: HUGGINGFACE_DEFAULT_COST,
-          contextWindow: providerWithContext?.context_length ?? HUGGINGFACE_DEFAULT_CONTEXT_WINDOW,
-          maxTokens: HUGGINGFACE_DEFAULT_MAX_TOKENS,
-        });
+        models.push(
+          applyHuggingfaceToolSupport(
+            {
+              id,
+              name,
+              reasoning: inferred.reasoning,
+              input,
+              cost: HUGGINGFACE_DEFAULT_COST,
+              contextWindow:
+                providerWithContext?.context_length ?? HUGGINGFACE_DEFAULT_CONTEXT_WINDOW,
+              maxTokens: HUGGINGFACE_DEFAULT_MAX_TOKENS,
+            },
+            entry.providers,
+          ),
+        );
       }
 
       return models.length > 0
