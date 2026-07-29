@@ -130,9 +130,21 @@ function applyHuggingfaceToolSupport(
   };
 }
 
+function isHuggingfaceQwenHybridThinkingModel(modelId: string): boolean {
+  const leaf = normalizeLowercaseStringOrEmpty(modelId).split("/").pop() ?? "";
+  if (!leaf.startsWith("qwen3")) {
+    return false;
+  }
+  // Qwen publishes separate non-thinking Instruct and specialized Coder /
+  // retrieval variants under the same family prefix. Only hybrid/base models
+  // accept the chat-template thinking switch used by OpenAI-compatible routes.
+  return !/(?:coder|embedding|reranker|instruct)/u.test(leaf);
+}
+
 function isReasoningModelHeuristic(modelId: string): boolean {
   const lower = normalizeLowercaseStringOrEmpty(modelId);
   return (
+    isHuggingfaceQwenHybridThinkingModel(modelId) ||
     lower.includes("r1") ||
     lower.includes("reason") ||
     lower.includes("thinking") ||
@@ -142,11 +154,21 @@ function isReasoningModelHeuristic(modelId: string): boolean {
   );
 }
 
-function inferredMetaFromModelId(id: string): { name: string; reasoning: boolean } {
+function inferredMetaFromModelId(id: string): {
+  name: string;
+  reasoning: boolean;
+  compat?: ModelDefinitionConfig["compat"];
+} {
   const base = id.split("/").pop() ?? id;
   const reasoning = isReasoningModelHeuristic(id);
   const name = base.replace(/-/g, " ").replace(/\b(\w)/g, (c) => c.toUpperCase());
-  return { name, reasoning };
+  return {
+    name,
+    reasoning,
+    ...(isHuggingfaceQwenHybridThinkingModel(id)
+      ? { compat: { thinkingFormat: "qwen-chat-template" } }
+      : {}),
+  };
 }
 
 function displayNameFromApiEntry(entry: HFModelEntry, inferredName: string): string {
@@ -250,6 +272,7 @@ export async function discoverHuggingfaceModels(
               reasoning: inferred.reasoning,
               input,
               cost: HUGGINGFACE_DEFAULT_COST,
+              ...(inferred.compat ? { compat: inferred.compat } : {}),
               contextWindow:
                 providerWithContext?.context_length ?? HUGGINGFACE_DEFAULT_CONTEXT_WINDOW,
               maxTokens: HUGGINGFACE_DEFAULT_MAX_TOKENS,

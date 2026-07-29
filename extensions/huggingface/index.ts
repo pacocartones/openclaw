@@ -3,6 +3,7 @@ import { defineSingleProviderPluginEntry } from "openclaw/plugin-sdk/provider-en
 import { applyHuggingfaceConfig, HUGGINGFACE_DEFAULT_MODEL_REF } from "./onboard.js";
 import manifest from "./openclaw.plugin.json" with { type: "json" };
 import { buildHuggingfaceProvider } from "./provider-catalog.js";
+import { wrapHuggingfaceProviderStream } from "./stream.js";
 
 const PROVIDER_ID = "huggingface";
 
@@ -49,5 +50,6 @@ export default defineSingleProviderPluginEntry({
         };
       },
     },
+    wrapStreamFn: wrapHuggingfaceProviderStream,
   },
 });

@@ -136,7 +136,7 @@ describe("Code Mode bridge settlement and cancellation", () => {
 
   it("reports whether dispatched bridge calls stayed side-effect-free", async () => {
     const { config, catalogRef, tools: codeModeTools } = createCodeModeHarness();
-    const mutation = pluginTool("fake_create_ticket", "Create a fake ticket");
+    const mutation = fakeTool("fake_create_ticket", "Create a fake ticket");
     mutation.parameters = Type.Object({ content: Type.String() }, { additionalProperties: false });
     mutation.prepareBeforeToolCallParams = (params) => {
       if (

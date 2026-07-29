@@ -3,6 +3,7 @@ import {
   CODE_MODE_EXEC_TOOL_NAME,
   CODE_MODE_WAIT_TOOL_NAME,
 } from "../../code-mode-control-tools.js";
+import { CODE_MODE_MODULE_ACCESS_ERROR } from "../../code-mode-errors.js";
 import type {
   AfterToolCallResult,
   AfterToolOutcomeContext,
@@ -22,6 +23,7 @@ type CodeModeFailure = {
   details: Record<string, unknown>;
 };
 
+type RepairClass = "pre-dispatch" | "read-only-bridge";
 type RepairState = "ready" | "offered" | "consumed";
 
 function resultText(result: AgentToolResult<unknown>): string {
@@ -201,17 +203,84 @@ function hookFailure(
   };
 }
 
+function failureBridgeCallSequence(failure: CodeModeFailure): string[] {
+  const telemetry = isRecord(failure.details.telemetry) ? failure.details.telemetry : {};
+  return Array.isArray(telemetry.callSequence)
+    ? telemetry.callSequence.filter((entry): entry is string => typeof entry === "string")
+    : [];
+}
+
 function repairReason(failure: CodeModeFailure): string {
+  if (
+    !failure.bridgeDispatchStarted &&
+    failure.failurePhase === "input" &&
+    failure.error === CODE_MODE_MODULE_ACCESS_ERROR
+  ) {
+    return [
+      "Retry exec once using only Code Mode guest tools.",
+      "Do not use import, require, fs, or absolute paths.",
+      "Follow every original step in order in one exec.",
+      'Read text with `const source = await tools.read({ path: "input.txt" }); const value = source.field("key");`.',
+      'If asked to write and verify, use `await tools.write({ path: "output.txt", content: value }); return (await tools.read({ path: "output.txt" })).content;`. For read-only work, return `value` or `source.content`.',
+      "Do not repeat unchanged input.",
+    ].join(" ");
+  }
+  if (
+    failure.bridgeDispatchStarted &&
+    failure.sideEffectFree &&
+    failureBridgeCallSequence(failure).includes("read")
+  ) {
+    return [
+      "Prior nested calls were read-only.",
+      "Complete every remaining original step in order in one corrected exec, using workspace-relative paths.",
+      'For text tool results, use `r.field("key")` for key=value or key: value data, or `r.content` for raw text.',
+      "Do not call `.field()` on `r.content`, and do not use JSON.parse unless the content is actually JSON.",
+      "Retry exec once with corrected JavaScript or TypeScript. Do not repeat unchanged input.",
+    ].join(" ");
+  }
   return failure.bridgeDispatchStarted && failure.sideEffectFree
-    ? "Prior nested calls were read-only. Retry exec once with corrected JavaScript or TypeScript. Do not repeat unchanged input."
+    ? 'Prior nested calls were read-only. Complete every remaining original step in order in one corrected exec, using workspace-relative paths. For text reads, use `const r = await tools.read({ path: "input.txt" }); const value = r.field("key");`. Retry exec once with corrected JavaScript or TypeScript. Do not repeat unchanged input.'
     : "Retry exec once with corrected JavaScript or TypeScript. Do not repeat unchanged input.";
 }
 
-/** Installs one bounded, side-effect-aware Code Mode repair opportunity. */
+function repairClass(failure: CodeModeFailure): RepairClass {
+  return failure.bridgeDispatchStarted ? "read-only-bridge" : "pre-dispatch";
+}
+
+function exhaustedRepairReason(kind: RepairClass): string {
+  return kind === "pre-dispatch"
+    ? "The Code Mode input repair attempt is exhausted."
+    : "The side-effect-free Code Mode execution repair attempt is exhausted.";
+}
+
+/** Installs one pre-dispatch repair plus one read-only bridge repair opportunity. */
 export function installCodeModeRepairHook(params: { agent: Agent }): void {
   const previousAfterToolOutcome = params.agent.afterToolOutcome?.bind(params.agent);
-  let repairState: RepairState = "ready";
-  let repairOfferedBy: AfterToolOutcomeContext["assistantMessage"] | undefined;
+  const repairStates: Record<RepairClass, RepairState> = {
+    "pre-dispatch": "ready",
+    "read-only-bridge": "ready",
+  };
+  let offeredRepair:
+    | {
+        kind: RepairClass;
+        assistantMessage: AfterToolOutcomeContext["assistantMessage"];
+      }
+    | undefined;
+
+  const consumeAllRepairs = () => {
+    repairStates["pre-dispatch"] = "consumed";
+    repairStates["read-only-bridge"] = "consumed";
+    offeredRepair = undefined;
+  };
+
+  const consumeCorrectionAttempt = (
+    assistantMessage: AfterToolOutcomeContext["assistantMessage"],
+  ) => {
+    if (offeredRepair && assistantMessage !== offeredRepair.assistantMessage) {
+      repairStates[offeredRepair.kind] = "consumed";
+      offeredRepair = undefined;
+    }
+  };
 
   params.agent.afterToolOutcome = async (context, signal) => {
     const codeModeTool =
@@ -248,16 +317,16 @@ export function installCodeModeRepairHook(params: { agent: Agent }): void {
       }
       if (
         effective.toolCall.name === CODE_MODE_EXEC_TOOL_NAME &&
-        repairState === "offered" &&
-        effective.assistantMessage !== repairOfferedBy
+        offeredRepair &&
+        effective.assistantMessage !== offeredRepair.assistantMessage
       ) {
-        repairState = "consumed";
+        consumeCorrectionAttempt(effective.assistantMessage);
       }
       return prior;
     }
 
     if (context.result.terminate === true || effective.result.terminate === true) {
-      repairState = "consumed";
+      consumeAllRepairs();
       return renderFailure({
         failure,
         allowed: false,
@@ -271,7 +340,7 @@ export function installCodeModeRepairHook(params: { agent: Agent }): void {
       (failure.bridgeDispatchStarted && !failure.sideEffectFree) ||
       effective.toolCall.name === CODE_MODE_WAIT_TOOL_NAME
     ) {
-      repairState = "consumed";
+      consumeAllRepairs();
       return renderFailure({
         failure,
         allowed: false,
@@ -288,7 +357,11 @@ export function installCodeModeRepairHook(params: { agent: Agent }): void {
         failure.failurePhase === "guest" ||
         (failure.failurePhase === "bridge" && failure.sideEffectFree)) &&
       (failure.code === "invalid_input" || failure.code === "internal_error");
-    if (repairState === "offered" && effective.assistantMessage === repairOfferedBy && repairable) {
+    if (
+      offeredRepair &&
+      effective.assistantMessage === offeredRepair.assistantMessage &&
+      repairable
+    ) {
       return renderFailure({
         failure,
         allowed: true,
@@ -298,19 +371,10 @@ export function installCodeModeRepairHook(params: { agent: Agent }): void {
       });
     }
 
-    if (repairState === "offered" || repairState === "consumed") {
-      repairState = "consumed";
-      return renderFailure({
-        failure,
-        allowed: false,
-        remainingAttempts: 0,
-        reason: "The single Code Mode repair attempt is exhausted.",
-        terminate: true,
-      });
-    }
+    consumeCorrectionAttempt(effective.assistantMessage);
 
     if (!repairable) {
-      repairState = "consumed";
+      consumeAllRepairs();
       return renderFailure({
         failure,
         allowed: false,
@@ -320,8 +384,23 @@ export function installCodeModeRepairHook(params: { agent: Agent }): void {
       });
     }
 
-    repairState = "offered";
-    repairOfferedBy = effective.assistantMessage;
+    const kind = repairClass(failure);
+    if (repairStates[kind] !== "ready") {
+      consumeAllRepairs();
+      return renderFailure({
+        failure,
+        allowed: false,
+        remainingAttempts: 0,
+        reason: exhaustedRepairReason(kind),
+        terminate: true,
+      });
+    }
+
+    repairStates[kind] = "offered";
+    offeredRepair = {
+      kind,
+      assistantMessage: effective.assistantMessage,
+    };
     return renderFailure({
       failure,
       allowed: true,

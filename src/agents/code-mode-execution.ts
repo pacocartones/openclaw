@@ -73,6 +73,9 @@ export async function runExec(params: {
   }
   const runtime = new ToolSearchRuntime(params.ctx, toToolSearchConfig(config), {
     enforceSideEffectFree: params.readOnly,
+    // Reject malformed core-tool inputs before the execution boundary. This
+    // preserves proof that a failed mutating call had no observable effects.
+    validateInput: "core",
   });
   const bridgeDispatch = { started: false };
   if (params.signal?.aborted) {
@@ -606,10 +609,10 @@ export async function runWait(params: {
   ) {
     throw new ToolInputError("code mode run belongs to a different session.");
   }
-  if (params.requireReadOnly === true && state.readOnly !== true) {
+  if (params.requireReadOnly && !state.readOnly) {
     throw new ToolInputError("code mode run was not created under the read-only policy.");
   }
-  if (params.requireRestartSafe === true && state.replaySafe !== true) {
+  if (params.requireRestartSafe && !state.replaySafe) {
     throw new ToolInputError("code mode run was not created under the restart-safe policy.");
   }
   if (resumingRunIds.has(state.runId)) {

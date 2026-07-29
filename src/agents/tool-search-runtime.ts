@@ -480,7 +480,10 @@ export class ToolSearchRuntime {
   constructor(
     private readonly ctx: ToolSearchToolContext,
     private readonly config: ToolSearchConfig,
-    private readonly options: { validateInput?: boolean; enforceSideEffectFree?: boolean } = {},
+    private readonly options: {
+      validateInput?: boolean | "core";
+      enforceSideEffectFree?: boolean;
+    } = {},
   ) {}
 
   search = async (query: string, options?: { limit?: number } & CatalogVisibilityOptions) => {
@@ -654,7 +657,10 @@ export class ToolSearchRuntime {
       await assertCatalogOutputMatchesSchema(entry, snapshot);
       return snapshot;
     };
-    const validateInput = this.options.validateInput && entry.source === "openclaw";
+    const validateInput =
+      entry.source === "openclaw" &&
+      (this.options.validateInput === true ||
+        (this.options.validateInput === "core" && entry.sourceName === "core"));
     const observeExecutionStart = options?.onExecutionStart !== undefined;
     const needsExecutionBoundary =
       validateInput || observeExecutionStart || this.options.enforceSideEffectFree === true;

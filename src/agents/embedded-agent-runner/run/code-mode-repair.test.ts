@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { CODE_MODE_MODULE_ACCESS_ERROR } from "../../code-mode-errors.js";
 import type { AfterToolOutcomeContext, Agent, AgentToolResult } from "../../runtime/index.js";
 import { installCodeModeRepairHook } from "./code-mode-repair.js";
 
@@ -35,19 +36,22 @@ function outcome(params: {
 
 function failedResult(params?: {
   code?: string;
+  error?: string;
   failurePhase?: "input" | "guest" | "bridge" | "host";
   bridgeDispatchStarted?: boolean;
   sideEffectFree?: boolean;
   output?: unknown[];
+  callSequence?: string[];
 }): AgentToolResult<unknown> {
   const details = {
     status: "failed",
     code: params?.code ?? "internal_error",
-    error: "guest failed",
+    error: params?.error ?? "guest failed",
     failurePhase: params?.failurePhase ?? "guest",
     bridgeDispatchStarted: params?.bridgeDispatchStarted ?? false,
     ...(params?.sideEffectFree !== undefined ? { sideEffectFree: params.sideEffectFree } : {}),
     ...(params?.output ? { output: params.output } : {}),
+    ...(params?.callSequence ? { telemetry: { callSequence: params.callSequence } } : {}),
   };
   return {
     content: [{ type: "text", text: JSON.stringify(details) }],
@@ -106,7 +110,7 @@ describe("installCodeModeRepairHook", () => {
     });
   });
 
-  it("terminates when the single repair attempt also fails", async () => {
+  it("terminates when the pre-dispatch repair attempt also fails", async () => {
     const agent = createAgent();
 
     await agent.afterToolOutcome?.(outcome({ result: failedResult() }));
@@ -116,6 +120,89 @@ describe("installCodeModeRepairHook", () => {
       isError: true,
       terminate: true,
       details: { repair: { allowed: false, remainingAttempts: 0 } },
+    });
+  });
+
+  it("gives module-access failures a guest-tool-only correction", async () => {
+    const agent = createAgent();
+
+    const result = await agent.afterToolOutcome?.(
+      outcome({
+        result: failedResult({
+          code: "invalid_input",
+          error: CODE_MODE_MODULE_ACCESS_ERROR,
+          failurePhase: "input",
+          bridgeDispatchStarted: false,
+        }),
+      }),
+    );
+
+    expect(result).toMatchObject({
+      terminate: false,
+      details: {
+        repair: {
+          allowed: true,
+          remainingAttempts: 1,
+          reason: expect.stringMatching(
+            /Do not use import, require, fs, or absolute paths.*Follow every original step in order.*source\.field\("key"\).*tools\.write.*tools\.read/,
+          ),
+        },
+      },
+    });
+  });
+
+  it("offers a read-only bridge repair after a pre-dispatch correction", async () => {
+    const agent = createAgent();
+
+    await agent.afterToolOutcome?.(
+      outcome({
+        result: failedResult({
+          code: "invalid_input",
+          failurePhase: "input",
+          bridgeDispatchStarted: false,
+        }),
+      }),
+    );
+    const bridgeRepair = await agent.afterToolOutcome?.(
+      outcome({
+        result: failedResult({
+          failurePhase: "bridge",
+          bridgeDispatchStarted: true,
+          sideEffectFree: true,
+        }),
+      }),
+    );
+    const exhausted = await agent.afterToolOutcome?.(
+      outcome({
+        result: failedResult({
+          failurePhase: "bridge",
+          bridgeDispatchStarted: true,
+          sideEffectFree: true,
+        }),
+      }),
+    );
+
+    expect(bridgeRepair).toMatchObject({
+      isError: true,
+      terminate: false,
+      details: {
+        repair: {
+          allowed: true,
+          remainingAttempts: 1,
+          reason: expect.stringContaining("Prior nested calls were read-only"),
+        },
+      },
+    });
+    expect(exhausted).toMatchObject({
+      isError: true,
+      terminate: true,
+      details: {
+        repair: {
+          allowed: false,
+          remainingAttempts: 0,
+          reason: "The side-effect-free Code Mode execution repair attempt is exhausted.",
+        },
+      },
     });
   });
 
@@ -169,6 +256,59 @@ describe("installCodeModeRepairHook", () => {
           allowed: true,
           remainingAttempts: 1,
           reason: expect.stringContaining("Prior nested calls were read-only"),
+        },
+      },
+    });
+  });
+
+  it("restates text-result access after a read-only read failure", async () => {
+    const agent = createAgent();
+
+    const result = await agent.afterToolOutcome?.(
+      outcome({
+        result: failedResult({
+          failurePhase: "bridge",
+          bridgeDispatchStarted: true,
+          sideEffectFree: true,
+          callSequence: ["read"],
+        }),
+      }),
+    );
+
+    expect(result).toMatchObject({
+      terminate: false,
+      details: {
+        repair: {
+          allowed: true,
+          reason: expect.stringMatching(
+            /Complete every remaining original step in order.*r\.field\("key"\).*r\.content.*Do not call `\.field\(\)` on `r\.content`.*do not use JSON\.parse/,
+          ),
+        },
+      },
+    });
+  });
+
+  it("keeps generic read-only repair guidance sequence-complete", async () => {
+    const agent = createAgent();
+
+    const result = await agent.afterToolOutcome?.(
+      outcome({
+        result: failedResult({
+          failurePhase: "bridge",
+          bridgeDispatchStarted: true,
+          sideEffectFree: true,
+        }),
+      }),
+    );
+
+    expect(result).toMatchObject({
+      terminate: false,
+      details: {
+        repair: {
+          allowed: true,
+          reason: expect.stringMatching(
+            /Complete every remaining original step in order.*workspace-relative paths.*r\.field\("key"\)/,
+          ),
         },
       },
     });

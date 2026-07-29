@@ -223,7 +223,7 @@ function createCodeModeExecDescription(
 function createCodeModeCodeDescription(catalog?: readonly ToolSearchCatalogEntry[]): string {
   const directMethodNames = catalog ? collectCodeModeDirectToolNames(catalog) : new Set<string>();
   if (directMethodNames.has("read") && directMethodNames.has("write")) {
-    return 'Obey every step. Verify writes: await tools.write(a); return await tools.read(b). Text: r.content or r.field("key"). No imports/process/fs.';
+    return 'Obey steps in order. Read -> write -> verify example: const source=await tools.read({path:"input.txt"}); const value=source.field("key"); await tools.write({path:"output.txt",content:value}); return (await tools.read({path:"output.txt"})).content; Adapt paths/key. No imports/process/fs.';
   }
   if (directMethodNames.has("read")) {
     return 'Obey every step. Read: const r=await tools.read(a); return r.content or r.field("key"). No imports/process/fs.';
@@ -249,19 +249,14 @@ export function createCodeModeTools(ctx: CodeModeToolContext): AnyAgentTool[] {
     label: "exec",
     description: createCodeModeExecDescription(ctx),
     parameters: Type.Object({
-      // `command` stays runtime-only for hook compatibility. Requiring the sole
-      // model-facing field prevents schema-valid empty calls from constrained models.
+      // `command` and `restartSafe` stay runtime-only for hook compatibility.
+      // Replay safety is host policy, not a property models should self-certify.
       code: Type.String({
         description: createCodeModeCodeDescription(),
       }),
       language: optionalStringEnum(["javascript", "typescript"] as const, {
         description: "Defaults to javascript.",
       }),
-      restartSafe: Type.Optional(
-        Type.Boolean({
-          description: "Only for workflows whose nested calls are all explicitly replay-safe.",
-        }),
-      ),
     }),
     execute: async (
       toolCallId: string,

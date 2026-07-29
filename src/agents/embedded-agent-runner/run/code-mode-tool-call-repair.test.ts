@@ -1,6 +1,7 @@
 import { Type } from "typebox";
 import { describe, expect, it, vi } from "vitest";
 import { wrapStreamFnRepairMalformedToolCallArguments } from "./attempt.tool-call-argument-repair.js";
+import { wrapStreamFnPromoteStandaloneTextToolCalls } from "./attempt.tool-call-normalization.js";
 import { wrapStreamFnTranslateCodeModeGuestToolCalls } from "./code-mode-tool-call-repair.js";
 
 const GUEST_TOOL_SCHEMAS = new Map<string, unknown>([
@@ -129,6 +130,72 @@ describe("Code Mode outer guest tool-call repair", () => {
         },
       ],
     });
+  });
+
+  it("promotes truncated guest XML and translates every terminal projection to exec", async () => {
+    const rawToolText = [
+      "<function=tools.read>",
+      "<parameter=path>",
+      "facts.txt",
+      "</parameter>",
+    ].join("\n");
+    const resultMessage = {
+      role: "assistant",
+      content: [{ type: "text", text: rawToolText }],
+      stopReason: "stop",
+    };
+    const doneMessage = structuredClone(resultMessage);
+    const baseFn = vi.fn(() =>
+      createFakeStream({
+        events: [
+          { type: "text_delta", contentIndex: 0, delta: rawToolText },
+          { type: "done", reason: "stop", message: doneMessage },
+        ],
+        resultMessage,
+      }),
+    );
+    const promoted = wrapStreamFnPromoteStandaloneTextToolCalls(
+      baseFn as never,
+      new Set(["exec"]),
+      {
+        additionalAllowedToolNames: new Set(["tools.read"]),
+        allowMissingXmlFunctionClose: true,
+      },
+    );
+    const wrapped = wrapStreamFnTranslateCodeModeGuestToolCalls(
+      promoted,
+      new Set(GUEST_TOOL_SCHEMAS.keys()),
+      GUEST_TOOL_SCHEMAS,
+    );
+    const stream = await Promise.resolve(wrapped({} as never, {} as never, {} as never));
+    const events: unknown[] = [];
+    for await (const event of stream) {
+      events.push(event);
+    }
+    const result = await stream.result();
+    const expectedArguments = {
+      code: 'return await tools["read"](JSON.parse("{\\"path\\":\\"facts.txt\\"}"));',
+    };
+
+    expect(result).toMatchObject({
+      content: [{ type: "toolCall", name: "exec", arguments: expectedArguments }],
+      stopReason: "toolUse",
+    });
+    const toolCallEnd = events.find(
+      (event) => (event as { type?: unknown }).type === "toolcall_end",
+    ) as { toolCall?: unknown };
+    expect(toolCallEnd.toolCall).toMatchObject({
+      name: "exec",
+      arguments: expectedArguments,
+    });
+    const doneEvent = events.find((event) => (event as { type?: unknown }).type === "done") as {
+      message?: { content?: unknown[] };
+    };
+    expect(doneEvent.message?.content?.[0]).toMatchObject({
+      name: "exec",
+      arguments: expectedArguments,
+    });
+    expect(JSON.stringify({ events, result })).not.toContain(rawToolText);
   });
 
   it("translates after provider argument repair reconstructs streamed exec arguments", async () => {

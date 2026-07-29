@@ -177,6 +177,11 @@ function wrapStreamTranslateCodeModeGuestToolCalls(
     return message;
   };
   wrapStreamObjectEvents(stream, (event) => {
+    if (event.type === "done") {
+      translateCodeModeGuestToolCalls(event.partial, guestToolNames, guestToolSchemas);
+      translateCodeModeGuestToolCalls(event.message, guestToolNames, guestToolSchemas);
+      return;
+    }
     if (event.type !== "toolcall_end") {
       return;
     }

@@ -235,10 +235,10 @@ describe("Code Mode catalog and model-visible surface", () => {
     expect(parameters.properties?.code?.description).not.toContain("tools.read");
     expect(parameters.properties?.code?.description).toContain("Obey every step");
     expect(parameters.properties?.code?.description).toContain("No imports/process/fs");
-    expect(parameters.properties?.restartSafe?.description).toContain("explicitly replay-safe");
     expect(parameters.properties?.language?.description).toContain("Defaults to javascript");
     expect(parameters).toMatchObject({ required: ["code"] });
     expect(parameters.properties).not.toHaveProperty("command");
+    expect(parameters.properties).not.toHaveProperty("restartSafe");
   });
 
   it("advertises concrete read/write patterns only when both methods exist", () => {
@@ -269,8 +269,13 @@ describe("Code Mode catalog and model-visible surface", () => {
     expect(execTool.description.indexOf(nodesGuidance)).toBe(
       execTool.description.lastIndexOf(nodesGuidance),
     );
+    expect(parameters.properties?.code?.description).toContain("Read -> write -> verify");
+    expect(parameters.properties?.code?.description).toContain('const value=source.field("key")');
     expect(parameters.properties?.code?.description).toContain(
-      "await tools.write(a); return await tools.read(b)",
+      'await tools.write({path:"output.txt",content:value})',
+    );
+    expect(parameters.properties?.code?.description).toContain(
+      'return (await tools.read({path:"output.txt"})).content',
     );
   });
 

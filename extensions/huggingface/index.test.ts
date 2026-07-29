@@ -79,4 +79,8 @@ describe("huggingface plugin", () => {
     expect(result).toBeNull();
     expect(buildHuggingfaceProviderMock).not.toHaveBeenCalled();
   });
+
+  it("registers the Hugging Face stream wrapper", () => {
+    expect(registerProvider().wrapStreamFn).toBeTypeOf("function");
+  });
 });

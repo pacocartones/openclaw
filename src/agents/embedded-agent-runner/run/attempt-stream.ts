@@ -210,9 +210,23 @@ export function installEmbeddedAttemptStreamGuards(input: {
     input.transcriptPolicy,
     attempt.provider,
   );
+  const codeModeTextToolNames = input.codeModeDirectToolNames
+    ? new Set([...input.codeModeDirectToolNames].flatMap((name) => [name, `tools.${name}`]))
+    : undefined;
   session.agent.streamFn = wrapStreamFnPromoteStandaloneTextToolCalls(
     session.agent.streamFn,
     input.liveAllowedToolNames,
+    codeModeTextToolNames
+      ? {
+          additionalAllowedToolNames: codeModeTextToolNames,
+          // A few small models emit the guest namespace itself as the function
+          // name. It has no dispatchable arguments, so scrub it and retry.
+          additionalScrubbedToolNames: new Set(["tools"]),
+          // Some small models close every XML parameter but omit only the final
+          // function tag. This remains terminal-only and guest-name allowlisted.
+          allowMissingXmlFunctionClose: true,
+        }
+      : undefined,
   );
   session.agent.streamFn = wrapStreamFnTrimToolCallNames(
     session.agent.streamFn,
