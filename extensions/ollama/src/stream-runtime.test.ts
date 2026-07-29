@@ -1588,14 +1588,18 @@ function createControlledNdjsonFetch(): {
   };
 }
 
-function getGuardedFetchCall(fetchMock: typeof fetchWithSsrFGuardMock): GuardedFetchCall {
-  return (fetchMock.mock.calls.at(0)?.[0] as GuardedFetchCall | undefined) ?? { url: "" };
+function getGuardedFetchCall(
+  fetchMock: typeof fetchWithSsrFGuardMock,
+  index = 0,
+): GuardedFetchCall {
+  return (fetchMock.mock.calls.at(index)?.[0] as GuardedFetchCall | undefined) ?? { url: "" };
 }
 
 function getGuardedFetchJsonBody(
   fetchMock: typeof fetchWithSsrFGuardMock,
+  index = 0,
 ): Record<string, unknown> {
-  const body = getGuardedFetchCall(fetchMock).init?.body;
+  const body = getGuardedFetchCall(fetchMock, index).init?.body;
   if (typeof body !== "string") {
     throw new Error("Expected string request body");
   }
@@ -1622,6 +1626,15 @@ function cancelTrackedResponse(
     response: new Response(stream, init),
     wasCanceled: () => canceled,
   };
+}
+
+function qwenToolParserErrorResponse(): Response {
+  return new Response(
+    JSON.stringify({
+      error: "XML syntax error on line 4: element <function> closed by </parameter>",
+    }),
+    { status: 500 },
+  );
 }
 
 async function createOllamaTestStream(params: {
@@ -2989,6 +3002,179 @@ describe("createOllamaStreamFn", () => {
     } finally {
       fetchWithSsrFGuardMock.mockReset();
     }
+  });
+
+  it("retries one known Qwen tool-parser 500 before emitting stream events", async () => {
+    const firstRelease = vi.fn(async () => undefined);
+    const secondRelease = vi.fn(async () => undefined);
+    fetchWithSsrFGuardMock
+      .mockResolvedValueOnce({
+        response: qwenToolParserErrorResponse(),
+        release: firstRelease,
+      })
+      .mockResolvedValueOnce({
+        response: new Response(
+          [
+            '{"model":"m","created_at":"t","message":{"role":"assistant","content":"[tool:exec] {\\"code\\":\\"return 1\\"}"},"done":false}',
+            '{"model":"m","created_at":"t","message":{"role":"assistant","content":""},"done":true,"prompt_eval_count":1,"eval_count":1}',
+            "",
+          ].join("\n"),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/x-ndjson" },
+          },
+        ),
+        release: secondRelease,
+      });
+
+    const events = await collectStreamEvents(
+      await createOllamaTestStream({
+        baseUrl: "http://ollama-host:11434",
+        model: { id: "qwen3.5:9b" },
+        context: {
+          messages: [{ role: "user", content: "read the file" }],
+          tools: [
+            {
+              name: "exec",
+              description: "Execute code",
+              parameters: {
+                type: "object",
+                properties: { code: { type: "string" } },
+                required: ["code"],
+              },
+            },
+          ],
+        },
+      }),
+    );
+
+    expect(fetchWithSsrFGuardMock).toHaveBeenCalledTimes(2);
+    expect(firstRelease).toHaveBeenCalledOnce();
+    expect(secondRelease).toHaveBeenCalledOnce();
+    expect(events.at(-1)?.type).toBe("done");
+    expect(events.filter((event) => event.type === "error")).toHaveLength(0);
+    const retryBody = getGuardedFetchJsonBody(fetchWithSsrFGuardMock, 1);
+    expect(retryBody).not.toHaveProperty("tools");
+    expect(JSON.stringify(retryBody.messages)).toContain("[tool:TOOL_NAME]");
+    expect(events.at(-1)).toMatchObject({
+      type: "done",
+      message: {
+        stopReason: "toolUse",
+        content: [
+          expect.objectContaining({
+            type: "toolCall",
+            name: "exec",
+            arguments: { code: "return 1" },
+          }),
+        ],
+      },
+    });
+    expect(ollamaStreamWarnMock).toHaveBeenCalledWith(
+      "Retrying qwen3.5:9b without native tools after Ollama's Qwen parser rejected output",
+    );
+  });
+
+  it("preserves asynchronous payload replacements in the Qwen parser fallback", async () => {
+    fetchWithSsrFGuardMock
+      .mockResolvedValueOnce({
+        response: qwenToolParserErrorResponse(),
+        release: vi.fn(async () => undefined),
+      })
+      .mockResolvedValueOnce({
+        response: new Response(
+          [
+            '{"model":"m","created_at":"t","message":{"role":"assistant","content":"[tool:exec] {\\"code\\":\\"return 1\\"}"},"done":false}',
+            '{"model":"m","created_at":"t","message":{"role":"assistant","content":""},"done":true}',
+            "",
+          ].join("\n"),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/x-ndjson" },
+          },
+        ),
+        release: vi.fn(async () => undefined),
+      });
+
+    await collectStreamEvents(
+      await createOllamaTestStream({
+        baseUrl: "http://ollama-host:11434",
+        model: { id: "qwen3.5:9b" },
+        context: {
+          messages: [{ role: "user", content: "read the file" }],
+          tools: [{ name: "exec", parameters: { type: "object", properties: {} } }],
+        },
+        options: {
+          onPayload: async (payload) => ({
+            ...requireRecord(payload, "Ollama request payload"),
+            model: "replacement-model",
+            keep_alive: "5m",
+          }),
+        },
+      }),
+    );
+
+    const firstBody = getGuardedFetchJsonBody(fetchWithSsrFGuardMock, 0);
+    const retryBody = getGuardedFetchJsonBody(fetchWithSsrFGuardMock, 1);
+    expect(firstBody).toMatchObject({ model: "replacement-model", keep_alive: "5m" });
+    expect(retryBody).toMatchObject({ model: "replacement-model", keep_alive: "5m" });
+    expect(retryBody).not.toHaveProperty("tools");
+  });
+
+  it("surfaces a repeated Qwen tool-parser failure after one retry", async () => {
+    const releases = [vi.fn(async () => undefined), vi.fn(async () => undefined)];
+    fetchWithSsrFGuardMock
+      .mockResolvedValueOnce({
+        response: qwenToolParserErrorResponse(),
+        release: releases[0],
+      })
+      .mockResolvedValueOnce({
+        response: qwenToolParserErrorResponse(),
+        release: releases[1],
+      });
+
+    const events = await collectStreamEvents(
+      await createOllamaTestStream({
+        baseUrl: "http://ollama-host:11434",
+        model: { id: "qwen3.5:9b" },
+        context: {
+          messages: [{ role: "user", content: "read the file" }],
+          tools: [{ name: "exec", parameters: { type: "object", properties: {} } }],
+        },
+      }),
+    );
+
+    expect(fetchWithSsrFGuardMock).toHaveBeenCalledTimes(2);
+    expect(releases[0]).toHaveBeenCalledOnce();
+    expect(releases[1]).toHaveBeenCalledOnce();
+    expect(events.at(-1)).toMatchObject({
+      type: "error",
+      error: {
+        errorMessage: expect.stringContaining(
+          "XML syntax error on line 4: element <function> closed by </parameter>",
+        ),
+      },
+    });
+    expect(ollamaStreamWarnMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry Qwen parser errors when no tools were sent", async () => {
+    const release = vi.fn(async () => undefined);
+    fetchWithSsrFGuardMock.mockResolvedValueOnce({
+      response: qwenToolParserErrorResponse(),
+      release,
+    });
+
+    const events = await collectStreamEvents(
+      await createOllamaTestStream({
+        baseUrl: "http://ollama-host:11434",
+        model: { id: "qwen3.5:9b" },
+      }),
+    );
+
+    expect(fetchWithSsrFGuardMock).toHaveBeenCalledOnce();
+    expect(release).toHaveBeenCalledOnce();
+    expect(events.at(-1)?.type).toBe("error");
+    expect(ollamaStreamWarnMock).not.toHaveBeenCalled();
   });
 
   it("keeps thinking chunks when no final content is emitted", async () => {
