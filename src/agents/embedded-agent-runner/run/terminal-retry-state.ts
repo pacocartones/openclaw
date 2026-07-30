@@ -1,4 +1,10 @@
+import type { FileTarget } from "../../tool-mutation.js";
+
 export const MAX_BEFORE_AGENT_FINALIZE_REVISIONS = 3;
+
+export type CodeModeMutationVerificationState = {
+  pendingTargets: FileTarget[];
+};
 
 export type EmbeddedRunTerminalRetryState = {
   reasoningOnlyAttempts: number;
@@ -11,6 +17,7 @@ export type EmbeddedRunTerminalRetryState = {
   beforeFinalizeRevisionAttempts: number;
   forceRestartSafeToolsForNextAttempt: boolean;
   forceReadOnlyToolsForNextAttempt: boolean;
+  codeModeMutationVerification: CodeModeMutationVerificationState;
 };
 
 export function createEmbeddedRunTerminalRetryState(): EmbeddedRunTerminalRetryState {
@@ -25,6 +32,7 @@ export function createEmbeddedRunTerminalRetryState(): EmbeddedRunTerminalRetryS
     beforeFinalizeRevisionAttempts: 0,
     forceRestartSafeToolsForNextAttempt: false,
     forceReadOnlyToolsForNextAttempt: false,
+    codeModeMutationVerification: { pendingTargets: [] },
   };
 }
 

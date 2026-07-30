@@ -3,8 +3,13 @@ import { getActiveAgentRingZeroTools } from "./agent-tools.ring-zero-context.js"
 import {
   applyCodeModeCatalog,
   isCodeModeEngagedForModel,
+  prefersNativeCodeModeFileTools,
   resolveCodeModeConfig,
 } from "./code-mode.js";
+import {
+  isLocalModelLeanEnabled,
+  LOCAL_MODEL_LEAN_CODE_MODE_DIRECT_TOOL_NAMES,
+} from "./local-model-lean.js";
 import { resolveAgentToolSearchRuntimeConfig } from "./tool-search-runtime-config.js";
 import type { ToolSearchConfig } from "./tool-search-types.js";
 import {
@@ -53,8 +58,11 @@ export function resolveAgentToolSurfacePlan(params: AgentToolSurfacePlanParams) 
       isCodeModeEngagedForModel(codeModeConfig, params.model));
   const toolSearchControlsEnabled =
     toolsAvailable && !codeModeControlsEnabled && toolSearchConfig.enabled;
+  const codeModeNativeFileToolsEnabled =
+    codeModeControlsEnabled && prefersNativeCodeModeFileTools(params.model);
   return {
     codeModeControlsEnabled,
+    codeModeNativeFileToolsEnabled,
     toolSearchControlsEnabled,
     toolSearchConfig,
     toolSearchRuntimeConfig,
@@ -62,12 +70,16 @@ export function resolveAgentToolSurfacePlan(params: AgentToolSurfacePlanParams) 
 }
 
 type CodeModeCatalogParams = Parameters<typeof applyCodeModeCatalog>[0];
-type ApplyAgentToolSurfaceCatalogParams = Omit<CodeModeCatalogParams, "directToolNames"> & {
+type ApplyAgentToolSurfaceCatalogParams = Omit<
+  CodeModeCatalogParams,
+  "directCoreToolNames" | "directToolNames"
+> & {
   /** Required key (may be undefined for a config-less run): the tool-search
    * branches resolve their mode from this, so omitting it would silently
    * downgrade the run to schema defaults. */
   toolSearchRuntimeConfig: OpenClawConfig | undefined;
   codeModeControlsEnabled: boolean;
+  codeModeNativeFileToolsEnabled: boolean;
   toolSearchConfig: ToolSearchConfig;
   forceDirectMessageTool: boolean;
   forceCodeModeControls?: boolean;
@@ -75,6 +87,7 @@ type ApplyAgentToolSurfaceCatalogParams = Omit<CodeModeCatalogParams, "directToo
 
 export function applyAgentToolSurfaceCatalog({
   codeModeControlsEnabled,
+  codeModeNativeFileToolsEnabled,
   toolSearchConfig,
   toolSearchRuntimeConfig,
   forceDirectMessageTool,
@@ -84,10 +97,27 @@ export function applyAgentToolSurfaceCatalog({
   // When the message tool is the only reply path it must stay directly visible
   // in every search mode; a hidden delivery tool can leave the run mute.
   const directToolNames = forceDirectMessageTool ? ["message"] : [];
+  const directCoreToolNames: string[] = [];
+  if (
+    codeModeControlsEnabled &&
+    codeModeNativeFileToolsEnabled &&
+    isLocalModelLeanEnabled({
+      config: catalogParams.config,
+      agentId: catalogParams.agentId,
+      sessionKey: catalogParams.sessionKey,
+    })
+  ) {
+    directCoreToolNames.push(
+      ...(catalogParams.forceReadOnlyTools
+        ? LOCAL_MODEL_LEAN_CODE_MODE_DIRECT_TOOL_NAMES.filter((name) => name === "read")
+        : LOCAL_MODEL_LEAN_CODE_MODE_DIRECT_TOOL_NAMES),
+    );
+  }
   if (codeModeControlsEnabled) {
     return applyCodeModeCatalog({
       ...catalogParams,
       config: catalogParams.config,
+      directCoreToolNames,
       directToolNames,
       forceEnabled: forceCodeModeControls,
     });
@@ -99,6 +129,7 @@ export function applyAgentToolSurfaceCatalog({
   return applyCatalog({
     ...catalogParams,
     config: toolSearchRuntimeConfig,
+    directCoreToolNames,
     directToolNames,
   });
 }

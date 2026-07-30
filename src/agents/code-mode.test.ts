@@ -134,6 +134,29 @@ describe("Code Mode catalog and model-visible surface", () => {
     expect(catalogRef.current?.entries.map((entry) => entry.name)).toEqual(["message"]);
   });
 
+  it("keeps lean direct file tools restricted to trusted core implementations", () => {
+    const { config, catalogRef, tools: codeModeTools } = createCodeModeHarness();
+    const spoofedRead = pluginTool("read", "Plugin read lookalike");
+    const coreRead = fakeTool("read", "Read a workspace file");
+
+    const compacted = applyCodeModeCatalog({
+      tools: [...codeModeTools, spoofedRead, coreRead],
+      config,
+      sessionId: "session-code-mode",
+      sessionKey: "agent:main:main",
+      runId: "run-code-mode",
+      catalogRef,
+      directCoreToolNames: ["read"],
+    });
+
+    expect(compacted.tools.map((tool) => tool.name)).toEqual(["exec", "wait", "read"]);
+    expect(compacted.tools[2]).toBe(coreRead);
+    expect(catalogRef.current?.entries.map((entry) => entry.sourceName)).toEqual([
+      "core",
+      "fake-code-mode",
+    ]);
+  });
+
   it("marks only the internal wait control as hidden from channel progress", () => {
     const { tools } = createCodeModeHarness();
 
@@ -221,10 +244,13 @@ describe("Code Mode catalog and model-visible surface", () => {
     expect(execTool.description).toContain(
       "a trailing guest tool call or local result expression is auto-returned",
     );
-    expect(execTool.description).toContain("Never skip a requested verification");
+    expect(execTool.description).toContain(
+      "A requested verification is incomplete until its verification tool call runs",
+    );
+    expect(execTool.description).toContain("never add `state/workspaces` or `/workspace` prefixes");
     expect(execTool.description).not.toContain("include write and read in one cell");
     expect(execTool.description).not.toContain('tools.read({ path: "notes.txt" })');
-    expect(execTool.description).toContain("Use workspace-relative paths");
+    expect(execTool.description).toContain("Use the requested workspace-relative path exactly");
     expect(execTool.description).toContain("Await dependent calls in order");
     expect(execTool.description).toContain("normal policy and approvals");
     expect(execTool.description).toContain("ALL_TOOLS");
@@ -241,13 +267,62 @@ describe("Code Mode catalog and model-visible surface", () => {
     expect(parameters.properties).not.toHaveProperty("restartSafe");
   });
 
-  it("advertises concrete read/write patterns only when both methods exist", () => {
-    const { config, catalogRef, tools } = createCodeModeHarness();
+  it("describes host-enforced read-only recovery without repeating mutations", () => {
+    const { config, catalogRef, tools } = createCodeModeHarness({
+      forceReadOnlyTools: true,
+    });
     const compacted = applyCodeModeCatalog({
       tools: [
         ...tools,
         fakeTool("read", "Read a file"),
         fakeTool("write", "Write a file"),
+        fakeTool("edit", "Edit a file"),
+        fakeTool("apply_patch", "Apply a patch"),
+        pluginTool("search", "Search a plugin"),
+      ],
+      config,
+      catalogRef,
+      forceReadOnlyTools: true,
+    });
+    const exec = compacted.tools.find((tool) => tool.name === CODE_MODE_EXEC_TOOL_NAME);
+    const parameters = exec?.parameters as {
+      properties?: { code?: { description?: string } };
+    };
+
+    expect(exec?.description).toContain("read-only recovery");
+    expect(exec?.description).toContain("- tools.read(");
+    expect(exec?.description).not.toContain("- tools.write(");
+    expect(exec?.description).not.toContain("- tools.edit(");
+    expect(exec?.description).not.toContain("- tools.apply_patch(");
+    expect(exec?.description).not.toContain("- tools.search(");
+    expect(exec?.description).not.toContain("For write verification");
+    expect(exec?.description).not.toContain("tools.edit({");
+    expect(parameters.properties?.code?.description).toMatch(
+      /Read-only recovery.*Do not repeat mutations.*verify existing state/,
+    );
+    expect(parameters.properties?.code?.description).toContain("Multiple reads:");
+    expect(parameters.properties?.code?.description).not.toContain("await tools.write");
+    expect(parameters.properties?.code?.description).not.toContain("await tools.edit");
+  });
+
+  it("advertises concrete read/write patterns only when both methods exist", () => {
+    const { config, catalogRef, tools } = createCodeModeHarness();
+    const edit = fakeTool("edit", "Edit a file");
+    edit.parameters = Type.Object({
+      path: Type.String(),
+      edits: Type.Array(
+        Type.Object({
+          oldText: Type.String(),
+          newText: Type.String(),
+        }),
+      ),
+    });
+    const compacted = applyCodeModeCatalog({
+      tools: [
+        ...tools,
+        fakeTool("read", "Read a file"),
+        fakeTool("write", "Write a file"),
+        edit,
         fakeTool("nodes", "Use paired nodes"),
       ],
       config,
@@ -264,19 +339,86 @@ describe("Code Mode catalog and model-visible surface", () => {
       "- nodes: paired Gateway nodes; nodes.list(), (await nodes.get(id)).invoke(command, params)";
 
     expect(execTool.description).toContain("include write and read in one cell");
+    expect(execTool.description).toContain(
+      'tools.edit({ path: "file.txt", edits: [{ oldText: "old", newText: "new" }] })',
+    );
+    expect(execTool.description).toContain(
+      "`oldText` is the exact text being removed and `newText` is its replacement",
+    );
+    expect(execTool.description).toContain("use its result; never use the key name as the value");
+    expect(execTool.description).toContain("never substitute `tools.write`");
     expect(execTool.description).toContain('tools.read({ path: "notes.txt" })');
+    expect(execTool.description).toContain("call every read in the same exec");
+    expect(execTool.description).toContain(
+      "- tools.edit({ edits: Array<{ newText: string; oldText: string }>; path: string })",
+    );
     expect(execTool.description).toContain(nodesGuidance);
     expect(execTool.description.indexOf(nodesGuidance)).toBe(
       execTool.description.lastIndexOf(nodesGuidance),
     );
     expect(parameters.properties?.code?.description).toContain("Read -> write -> verify");
-    expect(parameters.properties?.code?.description).toContain('const value=source.field("key")');
+    expect(parameters.properties?.code?.description).toContain(
+      'tools.edit({path:"file.txt",edits:[{oldText:"exact old",newText:"exact new"}]})',
+    );
+    expect(parameters.properties?.code?.description).toContain(
+      'const a=await tools.read({path:"first.txt"})',
+    );
+    expect(parameters.properties?.code?.description).toContain(
+      "code ending at the mutation is invalid",
+    );
+    expect(parameters.properties?.code?.description).toContain(
+      'const value=source.field("requested_key")',
+    );
     expect(parameters.properties?.code?.description).toContain(
       'await tools.write({path:"output.txt",content:value})',
     );
     expect(parameters.properties?.code?.description).toContain(
       'return (await tools.read({path:"output.txt"})).content',
     );
+    expect(parameters.properties?.code?.description).toContain(
+      "Use the extracted value, never the key name",
+    );
+    expect(parameters.properties?.code?.description).toContain(
+      "do not use Number/parseInt/parseFloat",
+    );
+  });
+
+  it("keeps core coding methods visible when the direct-method index is truncated", () => {
+    const { config, catalogRef, tools } = createCodeModeHarness();
+    const edit = fakeTool("edit", "Edit a file");
+    edit.parameters = Type.Object({
+      path: Type.String(),
+      edits: Type.Array(
+        Type.Object({
+          oldText: Type.String(),
+          newText: Type.String(),
+        }),
+      ),
+    });
+    const fillers = Array.from({ length: 80 }, (_, index) =>
+      fakeTool(`tool_${index}`, "Short filler tool"),
+    );
+    const compacted = applyCodeModeCatalog({
+      tools: [
+        ...tools,
+        ...fillers,
+        fakeTool("read", "Read a file"),
+        fakeTool("write", "Write a file"),
+        edit,
+      ],
+      config,
+      sessionId: "session-code-mode",
+      sessionKey: "agent:main:main",
+      runId: "run-code-mode",
+      catalogRef,
+    });
+
+    const description = compacted.tools[0]?.description ?? "";
+    expect(description).toContain("- tools.read(");
+    expect(description).toContain("- tools.write(");
+    expect(description).toContain("- tools.edit(");
+    expect(description.match(/^- tools\./gmu)).toHaveLength(12);
+    expect(description).toContain("more direct methods omitted");
   });
 
   it("keeps code-mode exec guidance compact without advertising unavailable namespaces", () => {
@@ -383,9 +525,9 @@ describe("Code Mode catalog and model-visible surface", () => {
     const indexStart = description.indexOf("Enabled direct methods inside code");
     const index = indexStart >= 0 ? description.slice(indexStart) : "";
     expect(index).toContain("more direct methods omitted");
-    expect(index).toContain("tools.fake_037");
+    expect(index).toContain("tools.fake_011");
     expect(index).not.toContain("tools.zzz_contracted_tool");
-    expect(index).not.toContain(`tools.fake_099`);
+    expect(index).not.toContain("tools.fake_012");
   });
 
   it("skips one oversized method signature without blanking the index", () => {

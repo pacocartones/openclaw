@@ -15,32 +15,46 @@ import {
   type QaEvidenceStatus,
   type QaEvidenceSummaryJson,
 } from "../extensions/qa-lab/api.js";
+import { resolveDefaultAgentDir } from "../src/agents/agent-scope-config.ts";
 import type { AgentExecEnvelope } from "../src/commands/agent-exec.ts";
+import { readSourceConfigBestEffort } from "../src/config/io.ts";
+import type { OpenClawConfig } from "../src/config/types.openclaw.ts";
 import { previewForDevToolLog, redactJsonValueForDevToolLog } from "./lib/dev-tooling-safety.ts";
 
 export { validateQaEvidenceSummaryJson };
 
 const execFileAsync = promisify(execFile);
 const SOURCE_PATH = "scripts/code-mode-model-matrix.ts";
-const MATRIX_SCHEMA_VERSION = 1;
+const MATRIX_SCHEMA_VERSION = 3;
 const DEFAULT_REPETITIONS = 3;
 const DEFAULT_TIMEOUT_SECONDS = 180;
 const MAX_REPETITIONS = 10;
 const MAX_DIAGNOSTIC_CHARS = 8_000;
 
 export type CodeModeMatrixMode = "direct" | "auto" | "code";
-export type CodeModeMatrixTask = "read" | "dependent-read-write";
+export type CodeModeMatrixAgentRuntime = "default" | "openclaw";
+export type CodeModeMatrixExecutionTransport = "bridge" | "mixed" | "native" | "none";
+export type CodeModeMatrixTask =
+  | "read"
+  | "read-two-files"
+  | "dependent-read-write"
+  | "edit-readback";
 
 export type CodeModeMatrixOptions = {
+  agentRuntime?: CodeModeMatrixAgentRuntime;
   allowFailures: boolean;
   dryRun: boolean;
   keepState: boolean;
+  localModelLean?: boolean;
   models: string[];
   modes: CodeModeMatrixMode[];
   outputDir?: string;
   repetitions: number;
   repoRoot: string;
+  seed?: number;
+  targetRoot?: string;
   tasks: CodeModeMatrixTask[];
+  temperature?: number;
   thinking: string;
   timeoutSeconds: number;
 };
@@ -54,9 +68,12 @@ type MatrixCell = {
 };
 
 type MatrixTaskFixture = {
+  effect?: {
+    expected: string;
+    path: string;
+  };
   expected: string;
   prompt: string;
-  resultPath?: string;
 };
 
 type MatrixRuntimeEntrypoint = {
@@ -86,6 +103,7 @@ export type CodeModeMatrixCellResult = {
   diagnostics?: string;
   elapsedMs: number;
   error?: AgentExecEnvelope["error"];
+  executionTransport: CodeModeMatrixExecutionTransport;
   expected: string;
   failureCategory: CellFailureCategory | null;
   final: string;
@@ -106,6 +124,7 @@ export type CodeModeMatrixCellResult = {
   repetition: number;
   sourceDirty: boolean;
   sourcePatchSha256: string | null;
+  startupMs?: number;
   status: AgentExecEnvelope["status"];
   task: CodeModeMatrixTask;
   timestamp: string;
@@ -114,15 +133,23 @@ export type CodeModeMatrixCellResult = {
 };
 
 type RunCellParams = {
+  agentRuntime: CodeModeMatrixAgentRuntime;
   buildSha256: string;
+  callerConfig?: OpenClawConfig;
   cell: MatrixCell;
+  configRoot?: string;
+  credentialAgentDir?: string;
   gitSha: string;
   keepState: boolean;
+  localModelLean: boolean;
   outputDir: string;
   repoRoot: string;
+  runRoot: string;
   runtime?: MatrixRuntimeEntrypoint;
+  seed?: number;
   sourceDirty: boolean;
   sourcePatchSha256: string | null;
+  temperature?: number;
   thinking: string;
   timeoutSeconds: number;
 };
@@ -150,11 +177,17 @@ Runs repeated Code Mode acceptance cells through the normal embedded agent path.
 Options:
   --model <provider/model>  Model reference; repeat for multiple models
   --mode <mode>             direct | auto | code; repeat to select modes
-  --task <task>             read | dependent-read-write; repeat to select tasks
+  --agent-runtime <mode>    openclaw | default (default: openclaw)
+  --task <task>             read | read-two-files | dependent-read-write | edit-readback
+                            Repeat to select tasks
   --repetitions <n>         Runs per model/mode/task cell (default: ${DEFAULT_REPETITIONS}, max: ${MAX_REPETITIONS})
   --timeout <seconds>       Per-run agent deadline (default: ${DEFAULT_TIMEOUT_SECONDS})
+  --temperature <number>    Optional model sampling temperature, including 0
+  --seed <integer>          Optional non-negative provider sampling seed
   --thinking <level>        Agent thinking level (default: off)
   --output-dir <path>       Repo-relative artifact directory
+  --target-root <path>      Product checkout to build and exercise (default: current repo)
+  --full-tools              Do not apply the local-model-lean tool profile
   --keep-state              Retain per-cell state and workspace directories
   --allow-failures          Exit zero after writing evidence even when cells fail
   --dry-run                 Write the manifest without calling models
@@ -184,6 +217,25 @@ function parseIntegerOption(raw: string, flag: string, max?: number): number {
   return value;
 }
 
+function parseNonNegativeIntegerOption(raw: string, flag: string): number {
+  if (!/^\d+$/u.test(raw)) {
+    throw new Error(`${flag} must be a non-negative integer`);
+  }
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value)) {
+    throw new Error(`${flag} must be a non-negative integer`);
+  }
+  return value;
+}
+
+function parseNonNegativeNumberOption(raw: string, flag: string): number {
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(`${flag} must be a non-negative finite number`);
+  }
+  return value;
+}
+
 function collectUnique<T extends string>(values: T[], value: T, flag: string): void {
   if (values.includes(value)) {
     throw new Error(`Duplicate ${flag} value: ${value}`);
@@ -198,11 +250,25 @@ function parseMode(raw: string): CodeModeMatrixMode {
   throw new Error(`--mode must be one of direct, auto, code; got ${JSON.stringify(raw)}`);
 }
 
-function parseTask(raw: string): CodeModeMatrixTask {
-  if (raw === "read" || raw === "dependent-read-write") {
+function parseAgentRuntime(raw: string): CodeModeMatrixAgentRuntime {
+  if (raw === "default" || raw === "openclaw") {
     return raw;
   }
-  throw new Error(`--task must be one of read, dependent-read-write; got ${JSON.stringify(raw)}`);
+  throw new Error(`--agent-runtime must be one of default, openclaw; got ${JSON.stringify(raw)}`);
+}
+
+function parseTask(raw: string): CodeModeMatrixTask {
+  if (
+    raw === "read" ||
+    raw === "read-two-files" ||
+    raw === "dependent-read-write" ||
+    raw === "edit-readback"
+  ) {
+    return raw;
+  }
+  throw new Error(
+    `--task must be one of read, read-two-files, dependent-read-write, edit-readback; got ${JSON.stringify(raw)}`,
+  );
 }
 
 export function parseCodeModeMatrixOptions(
@@ -212,11 +278,16 @@ export function parseCodeModeMatrixOptions(
   const models: string[] = [];
   const modes: CodeModeMatrixMode[] = [];
   const tasks: CodeModeMatrixTask[] = [];
+  let agentRuntime: CodeModeMatrixAgentRuntime = "openclaw";
   let allowFailures = false;
   let dryRun = false;
   let keepState = false;
+  let localModelLean = true;
   let outputDir: string | undefined;
   let repetitions = DEFAULT_REPETITIONS;
+  let seed: number | undefined;
+  let targetRoot: string | undefined;
+  let temperature: number | undefined;
   let thinking = "off";
   let timeoutSeconds = DEFAULT_TIMEOUT_SECONDS;
   const seen = new Set<string>();
@@ -245,6 +316,12 @@ export function parseCodeModeMatrixOptions(
       index += 1;
       continue;
     }
+    if (arg === "--agent-runtime") {
+      recordOnce(arg);
+      agentRuntime = parseAgentRuntime(readOptionValue(argv, index, arg));
+      index += 1;
+      continue;
+    }
     if (arg === "--task") {
       collectUnique(tasks, parseTask(readOptionValue(argv, index, arg)), arg);
       index += 1;
@@ -262,6 +339,18 @@ export function parseCodeModeMatrixOptions(
       index += 1;
       continue;
     }
+    if (arg === "--temperature") {
+      recordOnce(arg);
+      temperature = parseNonNegativeNumberOption(readOptionValue(argv, index, arg), arg);
+      index += 1;
+      continue;
+    }
+    if (arg === "--seed") {
+      recordOnce(arg);
+      seed = parseNonNegativeIntegerOption(readOptionValue(argv, index, arg), arg);
+      index += 1;
+      continue;
+    }
     if (arg === "--thinking") {
       recordOnce(arg);
       thinking = readOptionValue(argv, index, arg).trim();
@@ -274,6 +363,12 @@ export function parseCodeModeMatrixOptions(
       index += 1;
       continue;
     }
+    if (arg === "--target-root") {
+      recordOnce(arg);
+      targetRoot = path.resolve(cwd, readOptionValue(argv, index, arg));
+      index += 1;
+      continue;
+    }
     if (arg === "--allow-failures") {
       recordOnce(arg);
       allowFailures = true;
@@ -282,6 +377,11 @@ export function parseCodeModeMatrixOptions(
     if (arg === "--keep-state") {
       recordOnce(arg);
       keepState = true;
+      continue;
+    }
+    if (arg === "--full-tools") {
+      recordOnce(arg);
+      localModelLean = false;
       continue;
     }
     if (arg === "--dry-run") {
@@ -299,15 +399,23 @@ export function parseCodeModeMatrixOptions(
     throw new Error("At least one --model <provider/model> is required");
   }
   return {
+    agentRuntime,
     allowFailures,
     dryRun,
     keepState,
+    localModelLean,
     models,
     modes: modes.length > 0 ? modes : ["direct", "auto", "code"],
     outputDir,
     repetitions,
     repoRoot: path.resolve(cwd),
-    tasks: tasks.length > 0 ? tasks : ["read", "dependent-read-write"],
+    seed,
+    targetRoot,
+    tasks:
+      tasks.length > 0
+        ? tasks
+        : ["read", "read-two-files", "dependent-read-write", "edit-readback"],
+    temperature,
     thinking,
     timeoutSeconds,
   };
@@ -524,21 +632,21 @@ export async function reserveCodeModeMatrixOutputDir(
 }
 
 function buildCells(options: CodeModeMatrixOptions): MatrixCell[] {
-  return options.models.flatMap((model) =>
-    options.modes.flatMap((mode) =>
-      options.tasks.flatMap((task) =>
-        Array.from({ length: options.repetitions }, (_, index) => {
-          const repetition = index + 1;
-          return {
-            id: `${modelCellPrefix(model)}-${mode}-${task}-${repetition}`,
-            mode,
-            model,
-            repetition,
-            task,
-          };
-        }),
+  return Array.from({ length: options.repetitions }, (_, index) => index + 1).flatMap(
+    (repetition) =>
+      options.models.flatMap((model) =>
+        options.modes.flatMap((mode) =>
+          options.tasks.map((task) => {
+            return {
+              id: `${modelCellPrefix(model)}-${mode}-${task}-${repetition}`,
+              mode,
+              model,
+              repetition,
+              task,
+            };
+          }),
+        ),
       ),
-    ),
   );
 }
 
@@ -551,8 +659,22 @@ function verificationCode(cell: MatrixCell): string {
   return `CM-${createHash("sha256").update(cell.id).digest("hex").slice(0, 12).toUpperCase()}`;
 }
 
+function secondaryVerificationCode(cell: MatrixCell): string {
+  return `CM-${createHash("sha256")
+    .update(`${cell.id}\0secondary`)
+    .digest("hex")
+    .slice(0, 12)
+    .toUpperCase()}`;
+}
+
+function expectedAnswer(cell: MatrixCell): string {
+  const primary = verificationCode(cell);
+  return cell.task === "read-two-files" ? `${primary}|${secondaryVerificationCode(cell)}` : primary;
+}
+
 async function prepareTaskFixture(workspace: string, cell: MatrixCell): Promise<MatrixTaskFixture> {
   const expected = verificationCode(cell);
+  await fs.rm(workspace, { force: true, recursive: true });
   await fs.mkdir(workspace, { recursive: true });
   await fs.writeFile(
     path.join(workspace, "facts.txt"),
@@ -566,13 +688,36 @@ async function prepareTaskFixture(workspace: string, cell: MatrixCell): Promise<
         "Read facts.txt using tools. Reply with only the verification_code value, with no prose or formatting.",
     };
   }
-  const resultPath = path.join(workspace, "result.txt");
-  await fs.rm(resultPath, { force: true });
+  if (cell.task === "read-two-files") {
+    const secondary = secondaryVerificationCode(cell);
+    await fs.writeFile(
+      path.join(workspace, "more-facts.txt"),
+      `verification_code=${secondary}\n`,
+      "utf8",
+    );
+    return {
+      expected: `${expected}|${secondary}`,
+      prompt:
+        "Read facts.txt and more-facts.txt using tools. Reply with only their verification_code values joined by | in that file order, with no prose or formatting.",
+    };
+  }
+  if (cell.task === "dependent-read-write") {
+    const resultPath = path.join(workspace, "result.txt");
+    return {
+      effect: { expected, path: resultPath },
+      expected,
+      prompt:
+        "Read facts.txt using tools. Write only its verification_code value to result.txt, then read result.txt and reply with only that value. Do not guess or skip verification.",
+    };
+  }
+  const editablePath = path.join(workspace, "editable.txt");
+  const edited = `status=verified\nverification_code=${expected}`;
+  await fs.writeFile(editablePath, `status=pending\nverification_code=${expected}\n`, "utf8");
   return {
+    effect: { expected: edited, path: editablePath },
     expected,
     prompt:
-      "Read facts.txt using tools. Write only its verification_code value to result.txt, then read result.txt and reply with only that value. Do not guess or skip verification.",
-    resultPath,
+      "Read editable.txt using tools. Replace only status=pending with status=verified using the edit tool, then read editable.txt again and reply with only its verification_code value. Do not rewrite the whole file.",
   };
 }
 
@@ -717,6 +862,36 @@ function containsOrderedToolSequence(
   return expected.length === 0;
 }
 
+function containsMixedToolSequence(
+  outer: readonly string[] | undefined,
+  bridge: readonly string[] | undefined,
+  expected: readonly string[],
+): boolean {
+  if (!outer || !bridge) {
+    return false;
+  }
+  const bridgeBoundaries = outer.filter((name) => name === "exec" || name === "wait").length;
+  if (bridgeBoundaries !== 1) {
+    return false;
+  }
+  const observed = outer.flatMap((name) => (name === "exec" || name === "wait" ? bridge : [name]));
+  return containsOrderedToolSequence(observed, expected);
+}
+
+function requiredNestedSequences(task: CodeModeMatrixTask): readonly (readonly string[])[] {
+  switch (task) {
+    case "read":
+      return [["read"]];
+    case "read-two-files":
+      return [["read", "read"]];
+    case "dependent-read-write":
+      return [["read", "write", "read"]];
+    case "edit-readback":
+      return [["read", "edit", "read"]];
+  }
+  throw new Error("Unsupported matrix task");
+}
+
 function classifyProviderFailure(text: string): CellFailureCategory | null {
   if (
     /\b402\b|billing|credits? (?:depleted|exhausted|insufficient)|payment required/iu.test(text)
@@ -734,6 +909,33 @@ function classifyProviderFailure(text: string): CellFailureCategory | null {
     return "provider_transport";
   }
   return null;
+}
+
+function parseStartupMs(diagnostics: string): number | undefined {
+  const match = diagnostics.match(/\bphase=attempt-dispatch totalMs=(\d+)\b/u);
+  if (!match?.[1]) {
+    return undefined;
+  }
+  const value = Number(match[1]);
+  return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+export function resolveCodeModeMatrixExecutionTransport(
+  envelope: Readonly<AgentExecEnvelope>,
+): CodeModeMatrixExecutionTransport {
+  const hasBridge = (envelope.bridgeCalls?.call ?? 0) > 0;
+  const hasNative =
+    envelope.toolSummary?.sequence?.some((name) => name !== "exec" && name !== "wait") ?? false;
+  if (hasBridge && hasNative) {
+    return "mixed";
+  }
+  if (hasBridge) {
+    return "bridge";
+  }
+  if (hasNative) {
+    return "native";
+  }
+  return "none";
 }
 
 export function classifyCodeModeMatrixCell(params: {
@@ -758,16 +960,37 @@ export function classifyCodeModeMatrixCell(params: {
   const requestedModel = params.model.slice(separator + 1);
   const identity =
     params.envelope.provider === requestedProvider && params.envelope.model === requestedModel;
-  const outerToolExecution = (params.envelope.toolSummary?.calls ?? 0) > 0;
-  const requiredNestedSequence =
-    params.task === "dependent-read-write" ? ["read", "write", "read"] : ["read"];
-  // Direct and auto evaluate the model-visible outer tool surface. Forced Code
-  // Mode additionally proves the ordered nested operation sequence, including
-  // the read-back after a dependent write.
+  const outerCalls = params.envelope.toolSummary?.calls ?? 0;
+  const hasToolFailures =
+    (params.envelope.toolSummary?.failures ?? 0) > 0 ||
+    (params.envelope.bridgeCalls?.failures ?? 0) > 0;
+  const requiredSequences = requiredNestedSequences(params.task);
+  const codeSurfaceEngaged =
+    params.mode === "code" || (params.mode === "auto" && params.envelope.codeModeEngaged === true);
+  // Auto cells follow the surface that actually engaged. Both surfaces must
+  // prove the ordered sequence so a correct final value cannot hide skipped
+  // verification or a mutation performed through the wrong tool.
+  const nativeToolExecution = requiredSequences.some((required) =>
+    containsOrderedToolSequence(params.envelope.toolSummary?.sequence, required),
+  );
+  const bridgeToolExecution =
+    (params.envelope.toolSummary?.tools ?? []).includes("exec") &&
+    requiredSequences.some((required) =>
+      containsOrderedToolSequence(params.envelope.bridgeCalls?.sequence, required),
+    );
+  const mixedToolExecution = requiredSequences.some((required) =>
+    containsMixedToolSequence(
+      params.envelope.toolSummary?.sequence,
+      params.envelope.bridgeCalls?.sequence,
+      required,
+    ),
+  );
   const toolExecution =
-    outerToolExecution &&
-    (params.mode !== "code" ||
-      containsOrderedToolSequence(params.envelope.bridgeCalls?.sequence, requiredNestedSequence));
+    !hasToolFailures &&
+    outerCalls > 0 &&
+    (codeSurfaceEngaged
+      ? bridgeToolExecution || nativeToolExecution || mixedToolExecution
+      : nativeToolExecution);
   const oracle = { answer, effect, engagement, identity, toolExecution };
   if (params.stdoutContractValid === false) {
     return { failureCategory: "harness_error", oracle, passed: false };
@@ -931,12 +1154,17 @@ async function prepareRuntimeEntrypoint(
 export function buildCodeModeMatrixAgentEnv(
   model: string,
   runtimeCwd: string,
+  stateDir: string,
   baseEnv: NodeJS.ProcessEnv = process.env,
+  options: { configPath?: string; credentialAgentDir?: string } = {},
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     ...baseEnv,
     NODE_DISABLE_COMPILE_CACHE: "1",
     OPENCLAW_BUNDLED_PLUGINS_DIR: path.join(runtimeCwd, "dist", "extensions"),
+    OPENCLAW_CONFIG_PATH: options.configPath ?? path.join(stateDir, "openclaw.json"),
+    OPENCLAW_STATE_DIR: stateDir,
+    ...(options.credentialAgentDir ? { OPENCLAW_AGENT_DIR: options.credentialAgentDir } : {}),
   };
   // The local Ollama provider uses a non-secret opt-in marker. Keep cloud and
   // custom credentials caller-owned, but make the local acceptance path work.
@@ -945,6 +1173,59 @@ export function buildCodeModeMatrixAgentEnv(
   }
   delete env.NODE_COMPILE_CACHE;
   return env;
+}
+
+export function buildCodeModeMatrixConfig(
+  model: string,
+  agentRuntime: CodeModeMatrixAgentRuntime = "openclaw",
+  sampling: Pick<CodeModeMatrixOptions, "seed" | "temperature"> = {},
+  callerConfig: OpenClawConfig = {},
+): Record<string, unknown> {
+  const params = {
+    ...(sampling.seed === undefined ? {} : { seed: sampling.seed }),
+    ...(sampling.temperature === undefined ? {} : { temperature: sampling.temperature }),
+  };
+  const configuredModel =
+    callerConfig.agents?.defaults?.models?.[model] &&
+    typeof callerConfig.agents.defaults.models[model] === "object"
+      ? callerConfig.agents.defaults.models[model]
+      : {};
+  const shouldWriteModelConfig =
+    Object.keys(configuredModel).length > 0 ||
+    agentRuntime === "openclaw" ||
+    Object.keys(params).length > 0;
+  const configuredModelWithoutAgentRuntime = { ...configuredModel };
+  delete configuredModelWithoutAgentRuntime.agentRuntime;
+  const modelConfig = {
+    ...(agentRuntime === "default" ? configuredModelWithoutAgentRuntime : configuredModel),
+    ...(agentRuntime === "openclaw" ? { agentRuntime: { id: "openclaw" } } : {}),
+    ...(Object.keys(params).length === 0
+      ? {}
+      : {
+          params: {
+            ...configuredModel.params,
+            ...params,
+          },
+        }),
+  };
+  const providerConfig = {
+    ...(callerConfig.env ? { env: callerConfig.env } : {}),
+    ...(callerConfig.models ? { models: callerConfig.models } : {}),
+    ...(callerConfig.secrets ? { secrets: callerConfig.secrets } : {}),
+  };
+  if (!shouldWriteModelConfig) {
+    return providerConfig;
+  }
+  return {
+    ...providerConfig,
+    agents: {
+      defaults: {
+        models: {
+          [model]: modelConfig,
+        },
+      },
+    },
+  };
 }
 
 async function executeAgentExec(params: {
@@ -961,6 +1242,28 @@ async function executeAgentExec(params: {
   if (!runtime) {
     throw new Error("matrix runtime entrypoint was not prepared");
   }
+  const configPath = path.join(
+    params.matrix.configRoot ?? params.stateDir,
+    `${params.matrix.cell.id}.json`,
+  );
+  await fs.mkdir(path.dirname(configPath), { recursive: true });
+  await fs.writeFile(
+    configPath,
+    `${JSON.stringify(
+      buildCodeModeMatrixConfig(
+        params.matrix.cell.model,
+        params.matrix.agentRuntime,
+        {
+          seed: params.matrix.seed,
+          temperature: params.matrix.temperature,
+        },
+        params.matrix.callerConfig,
+      ),
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
   const args = [
     ...runtime.args,
     "agent",
@@ -974,7 +1277,7 @@ async function executeAgentExec(params: {
     params.matrix.cell.model,
     "--code-mode",
     params.matrix.cell.mode,
-    "--local-model-lean",
+    ...(params.matrix.localModelLean ? ["--local-model-lean"] : []),
     "--thinking",
     params.matrix.thinking,
     "--timeout",
@@ -982,7 +1285,16 @@ async function executeAgentExec(params: {
     "--json",
   ];
   try {
-    const env = buildCodeModeMatrixAgentEnv(params.matrix.cell.model, runtime.cwd);
+    const env = buildCodeModeMatrixAgentEnv(
+      params.matrix.cell.model,
+      runtime.cwd,
+      params.stateDir,
+      process.env,
+      {
+        configPath,
+        credentialAgentDir: params.matrix.credentialAgentDir,
+      },
+    );
     const { stdout, stderr } = await execFileAsync(process.execPath, args, {
       cwd: runtime.cwd,
       encoding: "utf8",
@@ -1038,75 +1350,77 @@ async function executeAgentExec(params: {
 }
 
 async function runMatrixCell(params: RunCellParams): Promise<CodeModeMatrixCellResult> {
-  const retainedRoot = path.join(params.outputDir, "state", params.cell.id);
-  if (params.keepState) {
-    await fs.rm(retainedRoot, { force: true, recursive: true });
-  }
-  const root = params.keepState
-    ? retainedRoot
-    : await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-code-mode-matrix-"));
-  const stateDir = path.join(root, "state");
-  const workspace = path.join(root, "workspace");
+  const { stateDir, workspace } = resolveCodeModeMatrixCellRuntimePaths(
+    params.runRoot,
+    params.cell.id,
+  );
+  await fs.rm(stateDir, { force: true, recursive: true });
   await fs.mkdir(stateDir, { recursive: true });
   const fixture = await prepareTaskFixture(workspace, params.cell);
   const startedAt = Date.now();
-  try {
-    const command = await executeAgentExec({
-      fixture,
-      matrix: params,
-      stateDir,
-      workspace,
-    });
-    const effectPassed = fixture.resultPath
-      ? (await fs.readFile(fixture.resultPath, "utf8").catch(() => "")).trim() === fixture.expected
-      : true;
-    const diagnosticText = command.diagnostics;
-    const classification = classifyCodeModeMatrixCell({
-      diagnostics: diagnosticText,
-      effectPassed,
-      envelope: command.envelope,
-      expected: fixture.expected,
-      mode: params.cell.mode,
-      model: params.cell.model,
-      stdoutContractValid: command.stdoutContractValid,
-      task: params.cell.task,
-    });
-    return {
-      ...(command.envelope.assistantTurns !== undefined
-        ? { assistantTurns: command.envelope.assistantTurns }
-        : {}),
-      ...(command.envelope.bridgeCalls ? { bridgeCalls: command.envelope.bridgeCalls } : {}),
-      buildSha256: params.buildSha256,
-      codeModeEngaged: command.envelope.codeModeEngaged ?? null,
-      ...(command.envelope.costUsd !== undefined ? { costUsd: command.envelope.costUsd } : {}),
-      ...(diagnosticText ? { diagnostics: diagnosticText } : {}),
-      elapsedMs: Date.now() - startedAt,
-      ...(command.envelope.error ? { error: command.envelope.error } : {}),
-      expected: fixture.expected,
-      failureCategory: classification.failureCategory,
-      final: command.envelope.final,
-      gitSha: params.gitSha,
-      id: params.cell.id,
-      mode: params.cell.mode,
-      model: params.cell.model,
-      observedModel: command.envelope.model,
-      observedProvider: command.envelope.provider,
-      oracle: classification.oracle,
-      passed: classification.passed,
-      repetition: params.cell.repetition,
-      sourceDirty: params.sourceDirty,
-      sourcePatchSha256: params.sourcePatchSha256,
-      status: command.envelope.status,
-      task: params.cell.task,
-      timestamp: new Date().toISOString(),
-      ...(command.envelope.toolSummary ? { toolSummary: command.envelope.toolSummary } : {}),
-      ...(command.envelope.usage ? { usage: command.envelope.usage } : {}),
-    };
-  } finally {
-    if (!params.keepState) {
-      await fs.rm(root, { force: true, recursive: true });
-    }
-  }
+  const command = await executeAgentExec({
+    fixture,
+    matrix: params,
+    stateDir,
+    workspace,
+  });
+  const effectPassed = fixture.effect
+    ? (await fs.readFile(fixture.effect.path, "utf8").catch(() => "")).trim() ===
+      fixture.effect.expected
+    : true;
+  const diagnosticText = command.diagnostics;
+  const elapsedMs = Date.now() - startedAt;
+  const startupMs = parseStartupMs(diagnosticText);
+  const classification = classifyCodeModeMatrixCell({
+    diagnostics: diagnosticText,
+    effectPassed,
+    envelope: command.envelope,
+    expected: fixture.expected,
+    mode: params.cell.mode,
+    model: params.cell.model,
+    stdoutContractValid: command.stdoutContractValid,
+    task: params.cell.task,
+  });
+  return {
+    ...(command.envelope.assistantTurns !== undefined
+      ? { assistantTurns: command.envelope.assistantTurns }
+      : {}),
+    ...(command.envelope.bridgeCalls ? { bridgeCalls: command.envelope.bridgeCalls } : {}),
+    buildSha256: params.buildSha256,
+    codeModeEngaged: command.envelope.codeModeEngaged ?? null,
+    ...(command.envelope.costUsd !== undefined ? { costUsd: command.envelope.costUsd } : {}),
+    ...(diagnosticText ? { diagnostics: diagnosticText } : {}),
+    elapsedMs,
+    ...(command.envelope.error ? { error: command.envelope.error } : {}),
+    executionTransport: resolveCodeModeMatrixExecutionTransport(command.envelope),
+    expected: fixture.expected,
+    failureCategory: classification.failureCategory,
+    final: command.envelope.final,
+    gitSha: params.gitSha,
+    id: params.cell.id,
+    mode: params.cell.mode,
+    model: params.cell.model,
+    observedModel: command.envelope.model,
+    observedProvider: command.envelope.provider,
+    oracle: classification.oracle,
+    passed: classification.passed,
+    repetition: params.cell.repetition,
+    sourceDirty: params.sourceDirty,
+    sourcePatchSha256: params.sourcePatchSha256,
+    ...(startupMs !== undefined ? { startupMs: Math.min(startupMs, elapsedMs) } : {}),
+    status: command.envelope.status,
+    task: params.cell.task,
+    timestamp: new Date().toISOString(),
+    ...(command.envelope.toolSummary ? { toolSummary: command.envelope.toolSummary } : {}),
+    ...(command.envelope.usage ? { usage: command.envelope.usage } : {}),
+  };
+}
+
+export function resolveCodeModeMatrixCellRuntimePaths(runRoot: string, cellId: string) {
+  return {
+    stateDir: path.join(runRoot, "runs", cellId, "state"),
+    workspace: path.join(runRoot, "workspaces", cellId),
+  };
 }
 
 function harnessFailureResult(
@@ -1125,7 +1439,8 @@ function harnessFailureResult(
     diagnostics: message,
     elapsedMs,
     error: { kind: "harness_error", message },
-    expected: verificationCode(cell),
+    executionTransport: "none",
+    expected: expectedAnswer(cell),
     failureCategory: "harness_error",
     final: "",
     gitSha: provenance.gitSha,
@@ -1151,15 +1466,98 @@ function harnessFailureResult(
   };
 }
 
-function summarizeResults(results: CodeModeMatrixCellResult[]) {
+type NumericSummary = {
+  captured: number;
+  max: number | null;
+  mean: number | null;
+  min: number | null;
+  p50: number | null;
+  p90: number | null;
+  total: number;
+};
+
+function summarizeNumbers(values: Array<number | undefined>): NumericSummary {
+  const captured = values.filter(
+    (value): value is number => typeof value === "number" && Number.isFinite(value),
+  );
+  if (captured.length === 0) {
+    return {
+      captured: 0,
+      max: null,
+      mean: null,
+      min: null,
+      p50: null,
+      p90: null,
+      total: 0,
+    };
+  }
+  const sorted = captured.toSorted((left, right) => left - right);
+  const total = captured.reduce((sum, value) => sum + value, 0);
+  return {
+    captured: captured.length,
+    max: sorted.at(-1) ?? null,
+    mean: total / captured.length,
+    min: sorted[0] ?? null,
+    p50: sorted[Math.floor(sorted.length * 0.5)] ?? null,
+    p90: sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.9))] ?? null,
+    total,
+  };
+}
+
+function summarizePerformance(results: CodeModeMatrixCellResult[]) {
+  const metric = (select: (result: CodeModeMatrixCellResult) => number | undefined) =>
+    summarizeNumbers(results.map(select));
+  const tokenVolume = (result: CodeModeMatrixCellResult): number | undefined => {
+    const capturedUsage = result.usage;
+    if (!capturedUsage) {
+      return undefined;
+    }
+    return (capturedUsage.input ?? 0) + (capturedUsage.output ?? 0);
+  };
+  return {
+    assistantTurns: metric((result) => result.assistantTurns),
+    bridgeOperations: metric((result) => {
+      const calls = result.bridgeCalls;
+      return calls ? calls.search + calls.describe + calls.call : undefined;
+    }),
+    bridgeToolCalls: metric((result) => result.bridgeCalls?.call),
+    cacheReadTokens: metric((result) => result.usage?.cacheRead),
+    cacheMetricsReported: metric((result) =>
+      result.usage &&
+      (Object.hasOwn(result.usage, "cacheRead") || Object.hasOwn(result.usage, "cacheWrite"))
+        ? 1
+        : 0,
+    ),
+    cacheWriteTokens: metric((result) => result.usage?.cacheWrite),
+    bridgeTransportCells: metric((result) => (result.executionTransport === "bridge" ? 1 : 0)),
+    costUsd: metric((result) => result.costUsd),
+    inputTokens: metric((result) => result.usage?.input),
+    mixedTransportCells: metric((result) => (result.executionTransport === "mixed" ? 1 : 0)),
+    nativeTransportCells: metric((result) => (result.executionTransport === "native" ? 1 : 0)),
+    postDispatchProcessMs: metric((result) =>
+      result.startupMs === undefined ? undefined : Math.max(0, result.elapsedMs - result.startupMs),
+    ),
+    outerToolCalls: metric((result) => result.toolSummary?.calls),
+    outputTokens: metric((result) => result.usage?.output),
+    reportedLastTurnTotalTokens: metric((result) => result.usage?.total),
+    startupMs: metric((result) => result.startupMs),
+    tokenVolume: metric(tokenVolume),
+    toolFailures: metric((result) => result.toolSummary?.failures),
+    wallMs: metric((result) => result.elapsedMs),
+  };
+}
+
+export function summarizeCodeModeMatrixResults(results: CodeModeMatrixCellResult[]) {
   const groups = new Map<
     string,
     {
       codeModeEngaged: number;
+      cleanPassed: number;
       failed: number;
       failures: Record<string, number>;
-      firstPassPassed: boolean;
+      firstRepetitionPassed: boolean;
       passed: number;
+      results: CodeModeMatrixCellResult[];
       total: number;
       wallMs: number[];
     }
@@ -1168,19 +1566,25 @@ function summarizeResults(results: CodeModeMatrixCellResult[]) {
     const key = `${result.model}\0${result.mode}\0${result.task}`;
     const group = groups.get(key) ?? {
       codeModeEngaged: 0,
+      cleanPassed: 0,
       failed: 0,
       failures: {},
-      firstPassPassed: false,
+      firstRepetitionPassed: false,
       passed: 0,
+      results: [],
       total: 0,
       wallMs: [],
     };
     group.total += 1;
+    group.results.push(result);
     group.wallMs.push(result.elapsedMs);
     if (result.passed) {
       group.passed += 1;
+      if ((result.toolSummary?.failures ?? 0) === 0) {
+        group.cleanPassed += 1;
+      }
       if (result.repetition === 1) {
-        group.firstPassPassed = true;
+        group.firstRepetitionPassed = true;
       }
     } else {
       group.failed += 1;
@@ -1197,12 +1601,18 @@ function summarizeResults(results: CodeModeMatrixCellResult[]) {
     const sortedWallMs = group.wallMs.toSorted((a, b) => a - b);
     return {
       codeModeEngaged: group.codeModeEngaged,
+      cleanPassRate: group.total === 0 ? 0 : group.cleanPassed / group.total,
+      cleanPassed: group.cleanPassed,
       failed: group.failed,
       failures: group.failures,
-      firstPassPassed: group.firstPassPassed,
+      firstRepetitionPassed: group.firstRepetitionPassed,
       mode,
       model,
-      eventualPassed: group.passed > 0,
+      anyRepetitionPassed: group.passed > 0,
+      metrics: {
+        all: summarizePerformance(group.results),
+        passed: summarizePerformance(group.results.filter((result) => result.passed)),
+      },
       p50WallMs: sortedWallMs[Math.floor(sortedWallMs.length / 2)] ?? 0,
       passRate: group.total === 0 ? 0 : group.passed / group.total,
       passed: group.passed,
@@ -1306,38 +1716,52 @@ export async function runCodeModeModelMatrix(
   deps: MatrixRunDependencies = {},
 ): Promise<{ exitCode: number; outputDir: string; summary: unknown }> {
   const now = deps.now?.() ?? new Date();
+  const agentRuntime = options.agentRuntime ?? "openclaw";
+  const localModelLean = options.localModelLean ?? true;
+  const targetRoot = path.resolve(options.targetRoot ?? options.repoRoot);
   const outputDir = resolveCodeModeMatrixOutputDir(options.repoRoot, options.outputDir, now);
   const sourceIdentity = deps.readSourceIdentity
-    ? await deps.readSourceIdentity(options.repoRoot)
+    ? await deps.readSourceIdentity(targetRoot)
     : deps.readGitSha
       ? {
-          gitSha: await deps.readGitSha(options.repoRoot),
+          gitSha: await deps.readGitSha(targetRoot),
           sourceDirty: false,
           sourcePatchSha256: null,
         }
-      : await readSourceIdentity(options.repoRoot);
+      : await readSourceIdentity(targetRoot);
   const cells = buildCells(options);
   await assertOutputOutsideGitMetadata(options.repoRoot, outputDir);
+  if (targetRoot !== path.resolve(options.repoRoot)) {
+    await assertOutputOutsideGitMetadata(targetRoot, outputDir);
+  }
   if (!options.dryRun) {
-    await (deps.buildCliArtifacts ?? buildMatrixCliArtifacts)(options.repoRoot);
+    await (deps.buildCliArtifacts ?? buildMatrixCliArtifacts)(targetRoot);
   }
   // Build first so its output set is complete, then reserve evidence storage
   // before hashing. Dry runs also write evidence, so every run needs isolation.
   await assertOutputOutsideRuntimeArtifacts(options.repoRoot, outputDir);
+  if (targetRoot !== path.resolve(options.repoRoot)) {
+    await assertOutputOutsideRuntimeArtifacts(targetRoot, outputDir);
+  }
   await reserveCodeModeMatrixOutputDir(options.repoRoot, outputDir);
   const buildSha256 = options.dryRun
     ? null
-    : await (deps.readBuildSha256 ?? hashRuntimeArtifacts)(options.repoRoot);
+    : await (deps.readBuildSha256 ?? hashRuntimeArtifacts)(targetRoot);
   const manifest = {
     schemaVersion: MATRIX_SCHEMA_VERSION,
     generatedAt: now.toISOString(),
     source: SOURCE_PATH,
     ...sourceIdentity,
+    target: targetRoot === path.resolve(options.repoRoot) ? "self" : "external",
     buildSha256,
+    agentRuntime,
+    localModelLean,
     models: options.models,
     modes: options.modes,
     tasks: options.tasks,
     repetitions: options.repetitions,
+    seed: options.seed,
+    temperature: options.temperature,
     timeoutSeconds: options.timeoutSeconds,
     thinking: options.thinking,
     keepState: options.keepState,
@@ -1361,10 +1785,18 @@ export async function runCodeModeModelMatrix(
   const runtimeRoot = deps.runCell
     ? undefined
     : await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-code-mode-runtime-"));
+  const matrixRunRoot = options.keepState
+    ? path.join(outputDir, "state")
+    : await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-code-mode-matrix-"));
   try {
     const runtime = runtimeRoot
-      ? await prepareRuntimeEntrypoint(options.repoRoot, runtimeRoot)
+      ? await prepareRuntimeEntrypoint(targetRoot, runtimeRoot)
       : undefined;
+    const callerConfig = runtimeRoot ? await readSourceConfigBestEffort() : undefined;
+    const credentialAgentDir = callerConfig
+      ? resolveDefaultAgentDir(callerConfig, process.env)
+      : undefined;
+    const configRoot = runtimeRoot ? path.join(runtimeRoot, "matrix-config") : undefined;
     const results: CodeModeMatrixCellResult[] = [];
     const resultsPath = path.join(outputDir, "results.jsonl");
     await fs.writeFile(resultsPath, "", "utf8");
@@ -1374,15 +1806,23 @@ export async function runCodeModeModelMatrix(
       const cellStartedAt = Date.now();
       try {
         result = await executeCell({
+          agentRuntime,
           buildSha256: buildSha256 ?? "dry-run",
+          callerConfig,
           cell,
+          configRoot,
+          credentialAgentDir,
           gitSha: sourceIdentity.gitSha,
           keepState: options.keepState,
+          localModelLean,
           outputDir,
-          repoRoot: options.repoRoot,
+          repoRoot: targetRoot,
+          runRoot: matrixRunRoot,
           runtime,
+          seed: options.seed,
           sourceDirty: sourceIdentity.sourceDirty,
           sourcePatchSha256: sourceIdentity.sourcePatchSha256,
+          temperature: options.temperature,
           thinking: options.thinking,
           timeoutSeconds: options.timeoutSeconds,
         });
@@ -1407,10 +1847,11 @@ export async function runCodeModeModelMatrix(
       console.log(`[code-mode-matrix] ${label} ${result.id} ${result.elapsedMs}ms`);
     }
 
-    const groups = summarizeResults(results);
+    const groups = summarizeCodeModeMatrixResults(results);
     const failed = results.filter((result) => !result.passed).length;
-    const firstPassPassed = groups.filter((group) => group.firstPassPassed).length;
-    const eventualPassed = groups.filter((group) => group.eventualPassed).length;
+    const firstRepetitionPassed = groups.filter((group) => group.firstRepetitionPassed).length;
+    const anyRepetitionPassed = groups.filter((group) => group.anyRepetitionPassed).length;
+    const cleanPassed = groups.filter((group) => group.cleanPassRate === 1).length;
     const summary = {
       schemaVersion: MATRIX_SCHEMA_VERSION,
       finishedAt: new Date().toISOString(),
@@ -1423,8 +1864,9 @@ export async function runCodeModeModelMatrix(
       },
       groupCounts: {
         total: groups.length,
-        firstPassPassed,
-        eventualPassed,
+        firstRepetitionPassed,
+        anyRepetitionPassed,
+        cleanPassed,
       },
       groups,
     };
@@ -1445,6 +1887,9 @@ export async function runCodeModeModelMatrix(
   } finally {
     if (runtimeRoot) {
       await fs.rm(runtimeRoot, { force: true, recursive: true });
+    }
+    if (!options.keepState) {
+      await fs.rm(matrixRunRoot, { force: true, recursive: true });
     }
   }
 }

@@ -39,7 +39,8 @@ export async function runEmbeddedAttemptExecutionPhase(
     transport: { effectiveAgentTransport, providerTextTransforms },
   } = sessionRuntime;
   const { orphanRepair } = sessionRuntime.boundary;
-  const { codeModeDirectToolNames, codeModeDirectToolSchemas } = toolCatalog;
+  const { codeModeDirectToolNames, codeModeDirectToolSchemas, codeModeNativeToolNames } =
+    toolCatalog;
   const { capabilityToolNames, liveAllowedToolNames, replayAllowedToolNames } =
     toolCatalog.toolSearchRunPlan;
   const { runtimeChannel } = systemPrompt;
@@ -73,6 +74,7 @@ export async function runEmbeddedAttemptExecutionPhase(
       liveAllowedToolNames,
       codeModeDirectToolNames,
       codeModeDirectToolSchemas,
+      codeModeNativeToolNames,
       clientToolLoopDetection,
       anthropicPayloadLogger,
       effectiveAgentTransport,

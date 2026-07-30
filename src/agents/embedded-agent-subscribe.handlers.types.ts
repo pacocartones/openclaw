@@ -50,6 +50,9 @@ export type ToolCallSummary = {
   mutatingAction: boolean;
   actionFingerprint?: string;
   fileTarget?: import("./tool-mutation.js").FileTarget;
+  mutationFallbackFileTargets?: import("./tool-mutation.js").FileTarget[];
+  mutationOrderStarted?: true;
+  observedMutationCompletionVersion?: number;
 };
 
 /** User-visible assistant stream payload emitted to subscribers. */
@@ -74,7 +77,17 @@ export type EmbeddedAgentSubscribeState = {
     toolName?: string;
     meta?: string;
     replaySafe?: boolean;
+    mutatingAction?: boolean;
+    fileTarget?: import("./tool-mutation.js").FileTarget;
+    fileTargets?: import("./tool-mutation.js").FileTarget[];
+    fileMutationExecutionStarted?: true;
+    fileTargetVerified?: true;
+    fileTargetAbsent?: true;
     sideEffectFree?: boolean;
+    codeModeLastCallSideEffectFree?: boolean;
+    codeModeSuccessfulObservationFileTargets?: import("./tool-mutation.js").FileTarget[];
+    codeModeSuccessfulAbsenceObservationFileTargets?: import("./tool-mutation.js").FileTarget[];
+    codeModeUnverifiedMutationFileTargets?: import("./tool-mutation.js").FileTarget[];
     codeModeRepairAllowed?: boolean;
     isError?: true;
     asyncStarted?: boolean;

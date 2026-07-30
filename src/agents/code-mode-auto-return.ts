@@ -39,6 +39,9 @@ function guestCallRootIdentifier(node: CodeModeAstNode | undefined): string | un
   if (node?.type === "ChainExpression" || node?.type === "AwaitExpression") {
     return guestCallRootIdentifier(node.expression ?? node.argument);
   }
+  if (node?.type === "MemberExpression") {
+    return guestCallRootIdentifier(node.object);
+  }
   return node?.type === "CallExpression" ? expressionRootIdentifier(node.callee) : undefined;
 }
 
@@ -257,6 +260,113 @@ function programScopeBindsIdentifier(
   );
 }
 
+function isIdentifierReference(
+  parent: CodeModeAstNode | undefined,
+  key: string | undefined,
+): boolean {
+  if (!parent || !key) {
+    return true;
+  }
+  if (
+    parent.type === "MemberExpression" &&
+    key === "property" &&
+    !(parent as { computed?: boolean }).computed
+  ) {
+    return false;
+  }
+  if (
+    (parent.type === "Property" ||
+      parent.type === "MethodDefinition" ||
+      parent.type === "PropertyDefinition") &&
+    key === "key" &&
+    !(parent as { computed?: boolean }).computed
+  ) {
+    return false;
+  }
+  if (
+    (parent.type === "LabeledStatement" ||
+      parent.type === "BreakStatement" ||
+      parent.type === "ContinueStatement") &&
+    key === "label"
+  ) {
+    return false;
+  }
+  if (parent.type === "MetaProperty") {
+    return false;
+  }
+  return !(
+    (parent.type === "VariableDeclarator" && key === "id") ||
+    ((parent.type === "ClassDeclaration" || parent.type === "ClassExpression") && key === "id")
+  );
+}
+
+function expressionReferencesProgramBinding(
+  value: unknown,
+  statements: readonly CodeModeAstNode[],
+  parent?: CodeModeAstNode,
+  key?: string,
+): boolean {
+  if (Array.isArray(value)) {
+    return value.some((item) => expressionReferencesProgramBinding(item, statements, parent, key));
+  }
+  if (!isCodeModeAstNode(value)) {
+    return false;
+  }
+  // A nested function's own result is not the value of the trailing expression.
+  // Keep auto-return scoped to references evaluated by the expression itself.
+  if (isFunctionNode(value)) {
+    return false;
+  }
+  if (
+    value.type === "Identifier" &&
+    value.name &&
+    isIdentifierReference(parent, key) &&
+    programScopeBindsIdentifier(statements, value.name)
+  ) {
+    return true;
+  }
+  return Object.entries(value).some(
+    ([childKey, child]) =>
+      childKey !== "type" &&
+      childKey !== "start" &&
+      childKey !== "end" &&
+      childKey !== "loc" &&
+      expressionReferencesProgramBinding(child, statements, value, childKey),
+  );
+}
+
+function expressionContainsGuestCall(
+  value: unknown,
+  statements: readonly CodeModeAstNode[],
+): boolean {
+  if (Array.isArray(value)) {
+    return value.some((item) => expressionContainsGuestCall(item, statements));
+  }
+  if (!isCodeModeAstNode(value) || isFunctionNode(value)) {
+    return false;
+  }
+  if (value.type === "CallExpression") {
+    const root = expressionRootIdentifier(value.callee);
+    if (
+      root &&
+      AUTO_RETURN_GUEST_ROOTS.has(root) &&
+      !programScopeBindsIdentifier(statements, root) &&
+      !astWritesIdentifier(statements, root) &&
+      !astWritesIdentifier(value, root)
+    ) {
+      return true;
+    }
+  }
+  return Object.entries(value).some(
+    ([key, child]) =>
+      key !== "type" &&
+      key !== "start" &&
+      key !== "end" &&
+      key !== "loc" &&
+      expressionContainsGuestCall(child, statements),
+  );
+}
+
 export function autoReturnFinalGuestCall(code: string): string {
   try {
     const source = parse(code, {
@@ -278,6 +388,16 @@ export function autoReturnFinalGuestCall(code: string): string {
     }
     const localRoot = expressionRootIdentifier(statement.expression);
     if (localRoot && programScopeBindsIdentifier(precedingStatements, localRoot)) {
+      return `${code.slice(0, statement.start)}return ${code.slice(statement.start)}`;
+    }
+    const containsGuestCall = expressionContainsGuestCall(
+      statement.expression,
+      precedingStatements,
+    );
+    if (
+      !containsGuestCall &&
+      expressionReferencesProgramBinding(statement.expression, precedingStatements)
+    ) {
       return `${code.slice(0, statement.start)}return ${code.slice(statement.start)}`;
     }
     const root = guestCallRootIdentifier(statement.expression);

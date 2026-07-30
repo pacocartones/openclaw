@@ -104,6 +104,7 @@ describe("applyAgentToolSurfaceCatalog", () => {
       config,
       toolSearchRuntimeConfig: plan.toolSearchRuntimeConfig,
       codeModeControlsEnabled: plan.codeModeControlsEnabled,
+      codeModeNativeFileToolsEnabled: plan.codeModeNativeFileToolsEnabled,
       toolSearchConfig: plan.toolSearchConfig,
       forceDirectMessageTool: false,
       catalogRef,
@@ -131,6 +132,7 @@ describe("applyAgentToolSurfaceCatalog", () => {
       config,
       toolSearchRuntimeConfig: plan.toolSearchRuntimeConfig,
       codeModeControlsEnabled: plan.codeModeControlsEnabled,
+      codeModeNativeFileToolsEnabled: plan.codeModeNativeFileToolsEnabled,
       toolSearchConfig: plan.toolSearchConfig,
       forceDirectMessageTool: false,
       forceCodeModeControls: true,
@@ -139,6 +141,103 @@ describe("applyAgentToolSurfaceCatalog", () => {
 
     expect(result.tools.map((tool) => tool.name)).toEqual(["exec", "wait"]);
     expect(result.catalogToolCount).toBe(1);
+  });
+
+  it("keeps bounded native file tools visible for lean Code Mode", () => {
+    const config: OpenClawConfig = {
+      agents: { defaults: { experimental: { localModelLean: true } } },
+      tools: { codeMode: true },
+    };
+    const plan = resolveAgentToolSurfacePlan({
+      ...basePlanParams,
+      config,
+      model: { compat: { codeMode: "preferred" } },
+    });
+    const catalogRef = createToolSearchCatalogRef();
+    const result = applyAgentToolSurfaceCatalog({
+      tools: [
+        ...createCodeModeTools({ config, catalogRef, executeTool }),
+        ...["read", "edit", "write", "apply_patch", "hidden_target"].map(createStubTool),
+      ],
+      config,
+      toolSearchRuntimeConfig: plan.toolSearchRuntimeConfig,
+      codeModeControlsEnabled: plan.codeModeControlsEnabled,
+      codeModeNativeFileToolsEnabled: plan.codeModeNativeFileToolsEnabled,
+      toolSearchConfig: plan.toolSearchConfig,
+      forceDirectMessageTool: false,
+      catalogRef,
+    });
+
+    expect(result.tools.map((tool) => tool.name)).toEqual([
+      "exec",
+      "wait",
+      "read",
+      "edit",
+      "write",
+      "apply_patch",
+    ]);
+    expect(result.catalogToolCount).toBe(5);
+  });
+
+  it("keeps only native read visible during lean Code Mode verification", () => {
+    const config: OpenClawConfig = {
+      agents: { defaults: { experimental: { localModelLean: true } } },
+      tools: { codeMode: true },
+    };
+    const plan = resolveAgentToolSurfacePlan({
+      ...basePlanParams,
+      config,
+      model: { compat: { codeMode: "preferred" } },
+    });
+    const catalogRef = createToolSearchCatalogRef();
+    const result = applyAgentToolSurfaceCatalog({
+      tools: [
+        ...createCodeModeTools({ config, catalogRef, executeTool, forceReadOnlyTools: true }),
+        ...["read", "edit", "write", "apply_patch", "hidden_target"].map(createStubTool),
+      ],
+      config,
+      toolSearchRuntimeConfig: plan.toolSearchRuntimeConfig,
+      codeModeControlsEnabled: plan.codeModeControlsEnabled,
+      codeModeNativeFileToolsEnabled: plan.codeModeNativeFileToolsEnabled,
+      toolSearchConfig: plan.toolSearchConfig,
+      forceDirectMessageTool: false,
+      forceReadOnlyTools: true,
+      catalogRef,
+    });
+
+    expect(result.tools.map((tool) => tool.name)).toEqual(["exec", "wait", "read"]);
+    expect(result.catalogToolCount).toBe(5);
+  });
+
+  it("keeps file tools behind the bridge for unflagged lean models", () => {
+    const config: OpenClawConfig = {
+      agents: { defaults: { experimental: { localModelLean: true } } },
+      tools: { codeMode: true },
+    };
+    const plan = resolveAgentToolSurfacePlan({
+      ...basePlanParams,
+      config,
+      model: { compat: {} },
+    });
+    const catalogRef = createToolSearchCatalogRef();
+    const result = applyAgentToolSurfaceCatalog({
+      tools: [
+        ...createCodeModeTools({ config, catalogRef, executeTool }),
+        ...["read", "edit", "write", "apply_patch"].map(createStubTool),
+      ],
+      config,
+      toolSearchRuntimeConfig: plan.toolSearchRuntimeConfig,
+      codeModeControlsEnabled: plan.codeModeControlsEnabled,
+      codeModeNativeFileToolsEnabled: plan.codeModeNativeFileToolsEnabled,
+      toolSearchConfig: plan.toolSearchConfig,
+      forceDirectMessageTool: false,
+      catalogRef,
+    });
+
+    expect(plan.codeModeControlsEnabled).toBe(true);
+    expect(plan.codeModeNativeFileToolsEnabled).toBe(false);
+    expect(result.tools.map((tool) => tool.name)).toEqual(["exec", "wait"]);
+    expect(result.catalogToolCount).toBe(4);
   });
 
   it("uses the schema-directory catalog in directory mode", () => {
@@ -151,6 +250,7 @@ describe("applyAgentToolSurfaceCatalog", () => {
       config,
       toolSearchRuntimeConfig: plan.toolSearchRuntimeConfig,
       codeModeControlsEnabled: plan.codeModeControlsEnabled,
+      codeModeNativeFileToolsEnabled: plan.codeModeNativeFileToolsEnabled,
       toolSearchConfig: plan.toolSearchConfig,
       forceDirectMessageTool: false,
       catalogRef: createToolSearchCatalogRef(),
@@ -172,6 +272,7 @@ describe("applyAgentToolSurfaceCatalog", () => {
       config,
       toolSearchRuntimeConfig: plan.toolSearchRuntimeConfig,
       codeModeControlsEnabled: plan.codeModeControlsEnabled,
+      codeModeNativeFileToolsEnabled: plan.codeModeNativeFileToolsEnabled,
       toolSearchConfig: plan.toolSearchConfig,
       forceDirectMessageTool: false,
       catalogRef: createToolSearchCatalogRef(),

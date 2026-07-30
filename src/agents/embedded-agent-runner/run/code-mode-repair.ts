@@ -211,6 +211,15 @@ function failureBridgeCallSequence(failure: CodeModeFailure): string[] {
 }
 
 function repairReason(failure: CodeModeFailure): string {
+  if (failure.details.readOnly === true) {
+    return [
+      "This recovery attempt is host-enforced read-only because a prior mutation may already have completed.",
+      "Do not call write, edit, apply_patch, or any unavailable method, and do not repeat the mutation.",
+      "Use the available read-only tools to inspect and verify the requested output or state, then return the user's exact requested answer.",
+      'For text results, use `r.field("requested_key")` for key=value or key: value data, replacing the example with the exact requested key, or use `r.content` for raw text.',
+      "Retry exec once with corrected JavaScript or TypeScript.",
+    ].join(" ");
+  }
   if (
     !failure.bridgeDispatchStarted &&
     failure.failurePhase === "input" &&
@@ -219,9 +228,10 @@ function repairReason(failure: CodeModeFailure): string {
     return [
       "Retry exec once using only Code Mode guest tools.",
       "Do not use import, require, fs, or absolute paths.",
+      "Use the original workspace-relative path exactly; do not prepend state/workspaces.",
       "Follow every original step in order in one exec.",
-      'Read text with `const source = await tools.read({ path: "input.txt" }); const value = source.field("key");`.',
-      'If asked to write and verify, use `await tools.write({ path: "output.txt", content: value }); return (await tools.read({ path: "output.txt" })).content;`. For read-only work, return `value` or `source.content`.',
+      'Read text with `const source = await tools.read({ path: "input.txt" }); const value = source.field("requested_key");`; replace both examples with the exact path and key from the user. `.field()` returns a string: write `value` unchanged, never the literal key name, and do not use Number/parseInt/parseFloat unless numeric conversion was requested.',
+      'For multiple files, call every `tools.read` in this exec. If asked to write/edit and verify, code ending at the mutation is invalid: finish with `return (await tools.read({ path: "output.txt" })).content;`. For read-only work, return `value` or `source.content`.',
       "Do not repeat unchanged input.",
     ].join(" ");
   }
@@ -232,14 +242,16 @@ function repairReason(failure: CodeModeFailure): string {
   ) {
     return [
       "Prior nested calls were read-only.",
-      "Complete every remaining original step in order in one corrected exec, using workspace-relative paths.",
-      'For text tool results, use `r.field("key")` for key=value or key: value data, or `r.content` for raw text.',
+      "Complete every remaining original step in order in one corrected exec, using the original workspace-relative path exactly; do not prepend state/workspaces.",
+      'For text tool results, use `r.field("requested_key")` for key=value or key: value data, replacing the example with the exact requested key, or use `r.content` for raw text.',
+      "When the user asks for a key's value, use the extracted value and never the literal key name.",
+      "`.field()` returns a string; preserve it exactly and do not use Number, parseInt, or parseFloat unless numeric conversion was requested.",
       "Do not call `.field()` on `r.content`, and do not use JSON.parse unless the content is actually JSON.",
       "Retry exec once with corrected JavaScript or TypeScript. Do not repeat unchanged input.",
     ].join(" ");
   }
   return failure.bridgeDispatchStarted && failure.sideEffectFree
-    ? 'Prior nested calls were read-only. Complete every remaining original step in order in one corrected exec, using workspace-relative paths. For text reads, use `const r = await tools.read({ path: "input.txt" }); const value = r.field("key");`. Retry exec once with corrected JavaScript or TypeScript. Do not repeat unchanged input.'
+    ? 'Prior nested calls were read-only. Complete every remaining original step in order in one corrected exec, using the original workspace-relative path exactly; do not prepend state/workspaces. For text reads, use `const r = await tools.read({ path: "input.txt" }); const value = r.field("requested_key");`, replacing both examples with the exact user request. `.field()` returns a string; preserve it exactly and do not use Number, parseInt, or parseFloat unless numeric conversion was requested. Retry exec once with corrected JavaScript or TypeScript. Do not repeat unchanged input.'
     : "Retry exec once with corrected JavaScript or TypeScript. Do not repeat unchanged input.";
 }
 

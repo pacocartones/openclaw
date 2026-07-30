@@ -3,6 +3,7 @@ import {
   enforceOutputLimit,
   enforceResultLimit,
   isCodeModeEngagedForModel,
+  prefersNativeCodeModeFileTools,
   prepareSource,
   resolveCodeModeConfig,
 } from "./code-mode-runtime.js";
@@ -115,6 +116,16 @@ describe("Code Mode master switch resolution", () => {
     { name: "auto skips a missing model", enabled: "auto", model: undefined, engaged: false },
   ] as const)("$name", ({ enabled, model, engaged }) => {
     expect(isCodeModeEngagedForModel({ enabled }, model)).toBe(engaged);
+  });
+
+  it.each([
+    { name: "preferred tool-capable model", model: preferredModel, preferred: true },
+    { name: "capable model", model: capableModel, preferred: false },
+    { name: "unflagged model", model: unflaggedModel, preferred: false },
+    { name: "preferred chat-only model", model: chatOnlyPreferredModel, preferred: false },
+    { name: "missing model", model: undefined, preferred: false },
+  ] as const)("selects native file tools only for $name", ({ model, preferred }) => {
+    expect(prefersNativeCodeModeFileTools(model)).toBe(preferred);
   });
 });
 
@@ -338,6 +349,49 @@ describe("Code Mode guest source validation", () => {
       );
     },
   );
+
+  it.each([
+    {
+      code: "const first = 'ZX';\nconst second = '42';\nfirst + '-' + second;",
+      finalLine: "first + '-' + second;",
+    },
+    {
+      code: "const first = 'ZX';\nconst second = '42';\n`${first}-${second}`;",
+      finalLine: "`${first}-${second}`;",
+    },
+    {
+      code: "const result = { content: 'ZX-42' };\ntrue ? result.content : 'missing';",
+      finalLine: "true ? result.content : 'missing';",
+    },
+  ])(
+    "returns a final expression that consumes locally bound results: $code",
+    async ({ code, finalLine }) => {
+      await expect(prepareSource({ code, config })).resolves.toBe(
+        `${code.slice(0, code.length - finalLine.length)}return ${finalLine}`,
+      );
+    },
+  );
+
+  it.each([
+    "await tools.read({ path: 'facts.txt' }).then((result) => result.content);",
+    "(await tools.read({ path: 'facts.txt' })).content;",
+  ])("returns an expression containing an unshadowed guest call: %s", async (code) => {
+    await expect(prepareSource({ code, config })).resolves.toBe(`return ${code}`);
+  });
+
+  it.each([
+    "const condition = true;\ncondition && tools.write({ path: 'result.txt', content: 'done' });",
+    "const condition = false;\ncondition ? tools.write({ path: 'result.txt', content: 'done' }) : 'skip';",
+  ])("does not auto-return a control expression containing a guest call: %s", async (code) => {
+    await expect(prepareSource({ code, config })).resolves.toBe(code);
+  });
+
+  it.each([
+    "const first = 'ZX';\n({ first: 'literal' });",
+    "const content = 'ZX-42';\n({ content: 'literal' });",
+  ])("does not infer a result from property names or shadowed guest calls: %s", async (code) => {
+    await expect(prepareSource({ code, config })).resolves.toBe(code);
+  });
 
   it.each([
     {

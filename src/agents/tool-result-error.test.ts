@@ -1,9 +1,33 @@
 import { describe, expect, it } from "vitest";
 import {
+  isFileNotFoundToolFailure,
   isToolResultError,
   resolveToolExecutionErrorKind,
   resolveToolResultFailureKind,
 } from "./tool-result-error.js";
+
+describe("isFileNotFoundToolFailure", () => {
+  it("recognizes structured and textual missing-file evidence", () => {
+    expect(isFileNotFoundToolFailure(Object.assign(new Error("missing"), { code: "ENOENT" }))).toBe(
+      true,
+    );
+    expect(
+      isFileNotFoundToolFailure({
+        details: { status: "failed", error: "ENOENT: no such file or directory" },
+      }),
+    ).toBe(true);
+    expect(
+      isFileNotFoundToolFailure({
+        content: [{ type: "text", text: "File not found: missing.txt" }],
+      }),
+    ).toBe(true);
+  });
+
+  it("does not confuse other read failures with absence", () => {
+    expect(isFileNotFoundToolFailure({ details: { error: "permission denied" } })).toBe(false);
+    expect(isFileNotFoundToolFailure({ details: { status: "timed_out" } })).toBe(false);
+  });
+});
 
 describe("isToolResultError", () => {
   it("keeps completed results with nonzero exit codes nonfatal", () => {

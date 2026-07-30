@@ -73,6 +73,7 @@ export async function runExec(params: {
   }
   const runtime = new ToolSearchRuntime(params.ctx, toToolSearchConfig(config), {
     enforceSideEffectFree: params.readOnly,
+    repairInput: true,
     // Reject malformed core-tool inputs before the execution boundary. This
     // preserves proof that a failed mutating call had no observable effects.
     validateInput: "core",
@@ -86,6 +87,7 @@ export async function runExec(params: {
       failurePhase: "host" as const,
       bridgeDispatchStarted: false,
       output: [],
+      readOnly: params.readOnly,
       replaySafe: params.restartSafe,
       telemetry: telemetry(runtime),
     };
@@ -133,7 +135,7 @@ export async function runExec(params: {
         params.signal,
       ),
     );
-    return await settleCodeModeResult({
+    const settled = await settleCodeModeResult({
       result,
       output: result.output,
       replaySafe: params.restartSafe,
@@ -150,6 +152,7 @@ export async function runExec(params: {
       signal: params.signal,
       onUpdate: params.onUpdate,
     });
+    return { ...settled, readOnly: params.readOnly };
   } catch (error) {
     const code = params.signal?.aborted ? ("aborted" as const) : codeModeFailureCode(error);
     return {
@@ -163,6 +166,7 @@ export async function runExec(params: {
           : ("host" as const),
       bridgeDispatchStarted: bridgeDispatch.started,
       output: [],
+      readOnly: params.readOnly,
       replaySafe: params.restartSafe,
       telemetry: telemetry(runtime),
     };

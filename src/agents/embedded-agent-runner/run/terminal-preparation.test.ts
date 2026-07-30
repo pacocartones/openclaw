@@ -114,7 +114,13 @@ describe("prepareEmbeddedRunTerminal run stats", () => {
   type StatsInput = {
     attempt?: Partial<EmbeddedRunAttemptResult>;
     assistantTurns?: number;
-    bridgeCalls?: { search: number; describe: number; call: number; sequence?: string[] };
+    bridgeCalls?: {
+      search: number;
+      describe: number;
+      call: number;
+      sequence?: string[];
+      failures?: number;
+    };
     codeModeEngaged?: boolean;
     config?: unknown;
     provider?: string;

@@ -18,6 +18,43 @@ function readToolErrorField(error: object, key: string): unknown {
   }
 }
 
+export function isFileNotFoundToolFailure(value: unknown): boolean {
+  const pending = [value];
+  const seen = new Set<unknown>();
+  while (pending.length > 0 && seen.size < 12) {
+    const current = pending.shift();
+    if (typeof current === "string") {
+      if (/\bENOENT\b|no such file or directory|file not found/i.test(current)) {
+        return true;
+      }
+      continue;
+    }
+    if (!current || typeof current !== "object" || seen.has(current)) {
+      continue;
+    }
+    seen.add(current);
+    for (const key of ["code", "status"] as const) {
+      const normalized = normalizeOptionalLowercaseString(readToolErrorField(current, key));
+      if (normalized === "enoent" || normalized === "not_found" || normalized === "not-found") {
+        return true;
+      }
+    }
+    for (const key of ["error", "message", "details", "cause", "reason", "content"] as const) {
+      const nested = readToolErrorField(current, key);
+      if (Array.isArray(nested)) {
+        pending.push(...nested);
+      } else if (nested !== undefined) {
+        pending.push(nested);
+      }
+    }
+    const text = readToolErrorField(current, "text");
+    if (typeof text === "string") {
+      pending.push(text);
+    }
+  }
+  return false;
+}
+
 function hasStructuredToolTimeoutIdentity(error: unknown): boolean {
   const pending = [error];
   const seen = new Set<unknown>();

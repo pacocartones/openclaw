@@ -29,6 +29,8 @@ import {
   DEFAULT_REASONING_ONLY_RETRY_LIMIT,
   NORMAL_CODE_MODE_CONTINUATION_INSTRUCTION,
   RESTART_SAFE_CODE_MODE_CONTINUATION_INSTRUCTION,
+  requiresCodeModeMutationVerification,
+  resolveCodeModeMutationVerificationState,
   resolveEmptyResponseRetryInstruction,
   isIncompleteTerminalAssistantTurn,
   resolveIncompleteTurnPayloadText as resolveIncompleteTurnPayloadTextCore,
@@ -146,6 +148,7 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
     expect(result.meta?.toolSummary).toEqual({
       calls: 3,
       tools: ["bash"],
+      sequence: ["bash", "bash", "bash"],
       failures: 2,
     });
   });
@@ -1168,6 +1171,7 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
     expect(result.meta?.toolSummary).toEqual({
       calls: 1,
       tools: ["write"],
+      sequence: ["write"],
       failures: 0,
     });
     expectWarnMessageWith("settled post-tool turn lacked a final answer");
@@ -1338,7 +1342,7 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
     expectNoWarnMessageWith("settled post-tool turn lacked a final answer");
   });
 
-  it("keeps only read-only tools across mutating Code Mode verification retries", async () => {
+  it("keeps only read-only tools across uncertain Code Mode mutation retries", async () => {
     const emptyStopAssistant = {
       role: "assistant",
       stopReason: "stop",
@@ -1351,7 +1355,14 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
       makeAttemptResult({
         assistantTexts: [],
         codeModeEngaged: true,
-        toolMetas: [{ toolName: "exec", replaySafe: true, sideEffectFree: false }],
+        toolMetas: [
+          {
+            toolName: "exec",
+            replaySafe: false,
+            sideEffectFree: false,
+            codeModeUnverifiedMutationFileTargets: [{ path: "result.txt", expected: "unknown" }],
+          },
+        ],
         replayMetadata: { hadPotentialSideEffects: true, replaySafe: true },
         currentAttemptReplayMetadata: { hadPotentialSideEffects: true, replaySafe: true },
         itemLifecycle: { startedCount: 1, completedCount: 1, activeCount: 0 },
@@ -1369,8 +1380,8 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
     mockedRunEmbeddedAttempt.mockResolvedValueOnce(
       makeAttemptResult({
         assistantTexts: [],
-        codeModeEngaged: true,
-        toolMetas: [{ toolName: "exec", replaySafe: true }],
+        codeModeEngaged: false,
+        toolMetas: [{ toolName: "read", replaySafe: true, fileTarget: { path: "other.txt" } }],
         replayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
         currentAttemptReplayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
         itemLifecycle: { startedCount: 1, completedCount: 1, activeCount: 0 },
@@ -1381,6 +1392,15 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
     mockedRunEmbeddedAttempt.mockResolvedValueOnce(
       makeAttemptResult({
         assistantTexts: ["Verified the completed write."],
+        codeModeEngaged: true,
+        toolMetas: [
+          {
+            toolName: "read",
+            replaySafe: true,
+            fileTarget: { path: "result.txt" },
+            fileTargetVerified: true,
+          },
+        ],
         lastAssistant: finalAssistant,
         currentAttemptAssistant: finalAssistant,
         currentAttemptCompletedAssistant: finalAssistant,
@@ -1402,6 +1422,7 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
     expect(result.payloads?.[0]?.text).toBe("Verified the completed write.");
     const secondCall = runAttemptCall(1);
     expect(secondCall.prompt).toBe(RESTART_SAFE_CODE_MODE_CONTINUATION_INSTRUCTION);
+    expect(secondCall.suppressNextUserMessagePersistence).toBe(true);
     expect(secondCall.disableTools).not.toBe(true);
     expect(secondCall.forceRestartSafeTools).toBeFalsy();
     expect(secondCall.forceReadOnlyTools).toBe(true);
@@ -1414,6 +1435,50 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
     expect(thirdCall.operation).toBe("attempt");
     expectWarnMessageWith("settled Code Mode work stopped before final verification");
     expectNoWarnMessageWith("settled post-tool turn lacked a final answer");
+  });
+
+  it("returns a visible Code Mode answer after a successful write-only sequence", async () => {
+    const prematureAssistant = {
+      role: "assistant",
+      stopReason: "stop",
+      provider: "ollama",
+      model: "qwen3.5:9b",
+      content: [{ type: "text", text: "CM-EXAMPLE" }],
+    } as unknown as NonNullable<EmbeddedRunAttemptResult["lastAssistant"]>;
+    mockedClassifyFailoverReason.mockReturnValue(null);
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce(
+      makeAttemptResult({
+        assistantTexts: ["CM-EXAMPLE"],
+        codeModeEngaged: true,
+        toolMetas: [
+          {
+            toolName: "exec",
+            replaySafe: false,
+            sideEffectFree: false,
+            codeModeLastCallSideEffectFree: false,
+            codeModeUnverifiedMutationFileTargets: [{ path: "result.txt" }],
+          },
+        ],
+        replayMetadata: { hadPotentialSideEffects: true, replaySafe: false },
+        currentAttemptReplayMetadata: { hadPotentialSideEffects: true, replaySafe: false },
+        itemLifecycle: { startedCount: 1, completedCount: 1, activeCount: 0 },
+        lastAssistant: prematureAssistant,
+        currentAttemptAssistant: prematureAssistant,
+        currentAttemptCompletedAssistant: prematureAssistant,
+      }),
+    );
+    mockedBuildEmbeddedRunPayloads.mockReturnValueOnce([{ text: "CM-EXAMPLE" }]);
+
+    const result = await runEmbeddedAgent({
+      ...overflowBaseRunParams,
+      provider: "ollama",
+      model: "qwen3.5:9b",
+      runId: "run-visible-mutating-code-mode-continuation",
+    });
+
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(1);
+    expect(result.payloads?.[0]?.text).toBe("CM-EXAMPLE");
+    expectNoWarnMessageWith("settled Code Mode work stopped before final verification");
   });
 
   it.each([
@@ -2737,6 +2802,394 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
     expect(instruction).toBeNull();
   });
 
+  it("requires verification only while nested mutation uncertainty remains", () => {
+    const base = {
+      codeModeEngaged: true,
+      toolMetas: [
+        {
+          toolName: "exec",
+          sideEffectFree: false,
+          codeModeLastCallSideEffectFree: false,
+          codeModeSuccessfulObservationFileTargets: [],
+          codeModeUnverifiedMutationFileTargets: [{ path: "result.txt", expected: "unknown" }],
+        },
+      ],
+    };
+
+    expect(requiresCodeModeMutationVerification(base)).toBe(true);
+    expect(
+      requiresCodeModeMutationVerification({
+        ...base,
+        toolMetas: [
+          ...base.toolMetas,
+          {
+            toolName: "exec",
+            sideEffectFree: true,
+            codeModeLastCallSideEffectFree: true,
+            codeModeSuccessfulObservationFileTargets: [{ path: "result.txt" }],
+            codeModeUnverifiedMutationFileTargets: [],
+          },
+        ],
+      }),
+    ).toBe(false);
+    expect(
+      requiresCodeModeMutationVerification({
+        ...base,
+        toolMetas: [
+          ...base.toolMetas,
+          {
+            toolName: "exec",
+            isError: true,
+            sideEffectFree: true,
+            codeModeLastCallSideEffectFree: true,
+            codeModeSuccessfulObservationFileTargets: [{ path: "result.txt" }],
+            codeModeUnverifiedMutationFileTargets: [],
+          },
+        ],
+      }),
+    ).toBe(true);
+    expect(
+      requiresCodeModeMutationVerification({
+        codeModeEngaged: true,
+        toolMetas: [
+          {
+            toolName: "exec",
+            isError: true,
+            sideEffectFree: false,
+            codeModeLastCallSideEffectFree: true,
+          },
+        ],
+      }),
+    ).toBe(false);
+    expect(
+      requiresCodeModeMutationVerification({
+        codeModeEngaged: true,
+        toolMetas: [
+          {
+            toolName: "exec",
+            sideEffectFree: false,
+            codeModeSuccessfulObservationFileTargets: [{ path: "result.txt" }],
+            codeModeUnverifiedMutationFileTargets: [],
+          },
+        ],
+      }),
+    ).toBe(false);
+    expect(
+      requiresCodeModeMutationVerification({
+        codeModeEngaged: true,
+        toolMetas: [
+          {
+            toolName: "exec",
+            sideEffectFree: false,
+            codeModeSuccessfulObservationFileTargets: [{ path: "result.txt" }],
+            codeModeUnverifiedMutationFileTargets: [{ path: "result.txt" }],
+          },
+        ],
+      }),
+    ).toBe(false);
+    expect(
+      requiresCodeModeMutationVerification({
+        codeModeEngaged: true,
+        toolMetas: [
+          {
+            toolName: "exec",
+            sideEffectFree: false,
+            codeModeUnverifiedMutationFileTargets: [{ path: "result.txt", expected: "unknown" }],
+          },
+        ],
+      }),
+    ).toBe(true);
+  });
+
+  it("does not force read-back after a successful native Code Mode mutation", () => {
+    const mutation = {
+      codeModeEngaged: true,
+      toolMetas: [
+        {
+          toolName: "write",
+          mutatingAction: true,
+          fileMutationExecutionStarted: true,
+          fileTarget: { path: "result.txt" },
+        },
+      ],
+    };
+
+    expect(requiresCodeModeMutationVerification(mutation)).toBe(false);
+    expect(
+      requiresCodeModeMutationVerification({
+        ...mutation,
+        toolMetas: [
+          ...mutation.toolMetas,
+          { toolName: "read", fileTarget: { path: "result.txt" }, fileTargetVerified: true },
+        ],
+      }),
+    ).toBe(false);
+    expect(
+      requiresCodeModeMutationVerification({
+        ...mutation,
+        toolMetas: [
+          ...mutation.toolMetas,
+          {
+            toolName: "read",
+            fileTarget: { path: "result.txt" },
+            fileTargetVerified: true,
+            isError: true,
+          },
+        ],
+      }),
+    ).toBe(false);
+    expect(
+      requiresCodeModeMutationVerification({
+        ...mutation,
+        toolMetas: [...mutation.toolMetas, { toolName: "read", fileTarget: { path: "other.txt" } }],
+      }),
+    ).toBe(false);
+  });
+
+  it("allows a normal-tool fallback read to clear a carried Code Mode target", () => {
+    expect(
+      resolveCodeModeMutationVerificationState(
+        {
+          codeModeEngaged: false,
+          toolMetas: [
+            {
+              toolName: "read",
+              fileTarget: { path: "./result.txt" },
+              fileTargetVerified: true,
+            },
+          ],
+        },
+        { pendingTargets: [{ path: "result.txt" }] },
+      ),
+    ).toEqual({ pendingTargets: [] });
+    expect(
+      resolveCodeModeMutationVerificationState(
+        {
+          codeModeEngaged: false,
+          toolMetas: [
+            {
+              toolName: "write",
+              isError: true,
+              mutatingAction: true,
+              fileTarget: { path: "other.txt" },
+            },
+          ],
+        },
+        { pendingTargets: [{ path: "result.txt" }] },
+      ),
+    ).toEqual({ pendingTargets: [{ path: "result.txt" }] });
+  });
+
+  it("requires read-back only when native apply_patch execution is uncertain", () => {
+    const mutation = {
+      codeModeEngaged: true,
+      toolMetas: [
+        {
+          toolName: "apply_patch",
+          mutatingAction: true,
+          fileMutationExecutionStarted: true,
+          fileTargets: [{ path: "a.ts" }, { path: "b.ts" }],
+        },
+      ],
+    };
+
+    expect(requiresCodeModeMutationVerification(mutation)).toBe(false);
+    expect(
+      requiresCodeModeMutationVerification({
+        ...mutation,
+        toolMetas: [
+          ...mutation.toolMetas,
+          { toolName: "read", fileTarget: { path: "a.ts" }, fileTargetVerified: true },
+        ],
+      }),
+    ).toBe(false);
+    expect(
+      requiresCodeModeMutationVerification({
+        ...mutation,
+        toolMetas: [
+          ...mutation.toolMetas,
+          { toolName: "read", fileTarget: { path: "a.ts" }, fileTargetVerified: true },
+          { toolName: "read", fileTarget: { path: "b.ts" }, fileTargetVerified: true },
+        ],
+      }),
+    ).toBe(false);
+    expect(
+      requiresCodeModeMutationVerification({
+        codeModeEngaged: true,
+        toolMetas: [
+          {
+            toolName: "apply_patch",
+            mutatingAction: true,
+            fileMutationExecutionStarted: true,
+            fileTargets: [],
+          },
+        ],
+      }),
+    ).toBe(false);
+    expect(
+      requiresCodeModeMutationVerification({
+        codeModeEngaged: true,
+        toolMetas: [
+          {
+            toolName: "apply_patch",
+            isError: true,
+            mutatingAction: true,
+            fileMutationExecutionStarted: true,
+            fileTargets: [{ path: "a.ts" }, { path: "b.ts" }],
+          },
+        ],
+      }),
+    ).toBe(true);
+  });
+
+  it("clears moved apply_patch targets with ordered absence and presence reads", () => {
+    const mutation = {
+      codeModeEngaged: true,
+      toolMetas: [
+        {
+          toolName: "apply_patch",
+          isError: true,
+          mutatingAction: true,
+          fileMutationExecutionStarted: true,
+          fileTargets: [
+            { path: "old.ts", expected: "absent" as const },
+            { path: "new.ts", expected: "present" as const },
+          ],
+        },
+      ],
+    };
+
+    expect(requiresCodeModeMutationVerification(mutation)).toBe(true);
+    expect(
+      resolveCodeModeMutationVerificationState({
+        ...mutation,
+        toolMetas: [
+          ...mutation.toolMetas,
+          {
+            toolName: "read",
+            isError: true,
+            fileTarget: { path: "old.ts" },
+            fileTargetAbsent: true,
+          },
+        ],
+      }),
+    ).toEqual({ pendingTargets: [{ path: "new.ts", expected: "unknown" }] });
+    expect(
+      requiresCodeModeMutationVerification({
+        ...mutation,
+        toolMetas: [
+          ...mutation.toolMetas,
+          {
+            toolName: "read",
+            isError: true,
+            fileTarget: { path: "old.ts" },
+            fileTargetAbsent: true,
+          },
+          {
+            toolName: "read",
+            fileTarget: { path: "new.ts" },
+            fileTargetVerified: true,
+          },
+        ],
+      }),
+    ).toBe(false);
+  });
+
+  it("uses nested Code Mode absence evidence to clear moved patch sources", () => {
+    expect(
+      resolveCodeModeMutationVerificationState({
+        codeModeEngaged: true,
+        toolMetas: [
+          {
+            toolName: "exec",
+            sideEffectFree: false,
+            codeModeSuccessfulAbsenceObservationFileTargets: [{ path: "old.ts" }],
+            codeModeUnverifiedMutationFileTargets: [{ path: "new.ts", expected: "unknown" }],
+          },
+        ],
+      }),
+      { pendingTargets: [{ path: "old.ts", expected: "absent" }] },
+    ).toEqual({ pendingTargets: [{ path: "new.ts", expected: "unknown" }] });
+  });
+
+  it("resolves failed mutation uncertainty from either ordered file state", () => {
+    const failedWrite = {
+      codeModeEngaged: true,
+      toolMetas: [
+        {
+          toolName: "write",
+          isError: true,
+          mutatingAction: true,
+          fileMutationExecutionStarted: true,
+          fileTarget: { path: "result.txt" },
+        },
+      ],
+    };
+    expect(requiresCodeModeMutationVerification(failedWrite)).toBe(true);
+    expect(resolveCodeModeMutationVerificationState(failedWrite)).toEqual({
+      pendingTargets: [{ path: "result.txt", expected: "unknown" }],
+    });
+    expect(
+      requiresCodeModeMutationVerification({
+        ...failedWrite,
+        toolMetas: [
+          ...failedWrite.toolMetas,
+          { toolName: "read", fileTarget: { path: "result.txt" }, fileTargetVerified: true },
+        ],
+      }),
+    ).toBe(false);
+
+    expect(
+      requiresCodeModeMutationVerification({
+        codeModeEngaged: true,
+        toolMetas: [
+          {
+            toolName: "write",
+            isError: true,
+            mutatingAction: true,
+            fileTarget: { path: "not-dispatched.txt" },
+          },
+        ],
+      }),
+    ).toBe(false);
+    expect(
+      requiresCodeModeMutationVerification({
+        ...failedWrite,
+        toolMetas: [
+          ...failedWrite.toolMetas,
+          {
+            toolName: "read",
+            isError: true,
+            fileTarget: { path: "result.txt" },
+            fileTargetAbsent: true,
+          },
+        ],
+      }),
+    ).toBe(false);
+
+    expect(
+      requiresCodeModeMutationVerification({
+        ...failedWrite,
+        toolMetas: [
+          ...failedWrite.toolMetas,
+          { toolName: "read", fileTarget: { path: "result.txt" } },
+        ],
+      }),
+    ).toBe(true);
+
+    const failedTargetlessExec = {
+      codeModeEngaged: true,
+      toolMetas: [{ toolName: "exec", isError: true }],
+    };
+    expect(requiresCodeModeMutationVerification(failedTargetlessExec)).toBe(false);
+    expect(
+      requiresCodeModeMutationVerification({
+        ...failedTargetlessExec,
+        toolMetas: [...failedTargetlessExec.toolMetas, { toolName: "exec", sideEffectFree: true }],
+      }),
+    ).toBe(false);
+  });
+
   it("does not flag stale lastAssistant=toolUse when currentAttemptAssistant=stop exists (#80918)", () => {
     const incompleteTurnText = resolveIncompleteTurnPayloadText({
       payloadCount: 1,
@@ -3952,6 +4405,42 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
     ).toBe(
       "The prior Code Mode exec failed without side effects. Inspect the prior error and tool output, then retry with changed code using injected global tools only. If text parsing failed, inspect raw `.content` instead of assuming JSON or quoted values. Do not use import, require, process, fs, or absolute workspace paths.",
     );
+  });
+
+  it("retries a repairable side-effect-free failure despite untrusted assistant text", () => {
+    const assistant = {
+      role: "assistant",
+      stopReason: "stop",
+      provider: "ollama",
+      model: "granite4:3b",
+      content: [{ type: "text", text: "_verify_" }],
+    } as unknown as EmbeddedRunAttemptResult["lastAssistant"];
+
+    expect(
+      resolveReplaySafeCodeModeErrorRetryInstruction({
+        payloadCount: 1,
+        aborted: false,
+        timedOut: false,
+        attempt: makeAttemptResult({
+          assistantTexts: ["_verify_"],
+          codeModeEngaged: true,
+          toolMetas: [
+            {
+              toolName: "exec",
+              isError: true,
+              replaySafe: true,
+              sideEffectFree: true,
+              codeModeRepairAllowed: true,
+            },
+          ],
+          replayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
+          itemLifecycle: { startedCount: 1, completedCount: 1, activeCount: 0 },
+          lastToolError: { toolName: "exec", error: "module access is disabled" },
+          lastAssistant: assistant,
+          currentAttemptAssistant: assistant,
+        }),
+      }),
+    ).toContain("failed without side effects");
   });
 
   it("does not retry reasoning-only GPT turns after side effects", () => {

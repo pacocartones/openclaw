@@ -71,6 +71,7 @@ export function installEmbeddedAttemptStreamGuards(input: {
   liveAllowedToolNames: Set<string>;
   codeModeDirectToolNames?: ReadonlySet<string>;
   codeModeDirectToolSchemas?: ReadonlyMap<string, unknown>;
+  codeModeNativeToolNames?: ReadonlySet<string>;
   isYieldDetected: () => boolean;
   clientToolLoopDetection: ReturnType<
     typeof import("../../agent-tools.js").resolveToolLoopDetectionConfig
@@ -264,6 +265,7 @@ export function installEmbeddedAttemptStreamGuards(input: {
     session.agent.streamFn,
     input.codeModeDirectToolNames,
     input.codeModeDirectToolSchemas,
+    input.codeModeNativeToolNames,
   );
 
   if (input.anthropicPayloadLogger) {

@@ -18,6 +18,7 @@ import {
 } from "../../execution-contract.js";
 import { hasOnlyAssistantReasoningContent } from "../../replay-turn-classification.js";
 import type { AgentMessage } from "../../runtime/index.js";
+import { type FileTarget, isSameFileTarget } from "../../tool-mutation.js";
 import {
   hasCommittedMessagingToolDeliveryEvidence,
   hasMessagingToolDeliveryEvidence,
@@ -25,6 +26,7 @@ import {
 import { isZeroUsageEmptyStopAssistantTurn } from "../empty-assistant-turn.js";
 import { assessLastAssistantMessage } from "../thinking.js";
 import type { EmbeddedRunLivenessState } from "../types.js";
+import type { CodeModeMutationVerificationState } from "./terminal-retry-state.js";
 import type { EmbeddedRunAttemptResult } from "./types.js";
 
 type ReplayMetadataAttempt = Pick<
@@ -191,6 +193,147 @@ export function resolveCodeModeContinuationToolPolicy(attempt: {
     return null;
   }
   return resolveAttemptReplayMetadata(attempt).hadPotentialSideEffects ? "read-only" : "normal";
+}
+
+/**
+ * Detects a completed Code Mode mutation that ended without a later
+ * side-effect-free observation. Failed follow-up execs do not erase the need
+ * for verification, and the continuation is host-restricted to read-only tools.
+ */
+export function resolveCodeModeMutationVerificationState(
+  attempt: {
+    codeModeEngaged?: boolean;
+    toolMetas?: ReadonlyArray<{
+      toolName?: string;
+      isError?: boolean;
+      mutatingAction?: boolean;
+      fileTarget?: FileTarget;
+      fileTargets?: FileTarget[];
+      fileMutationExecutionStarted?: true;
+      fileTargetVerified?: true;
+      fileTargetAbsent?: true;
+      sideEffectFree?: boolean;
+      codeModeLastCallSideEffectFree?: boolean;
+      codeModeSuccessfulObservationFileTargets?: FileTarget[];
+      codeModeSuccessfulAbsenceObservationFileTargets?: FileTarget[];
+      codeModeUnverifiedMutationFileTargets?: FileTarget[];
+    }>;
+  },
+  initial: CodeModeMutationVerificationState = {
+    pendingTargets: [],
+  },
+): CodeModeMutationVerificationState {
+  let pendingTargets = [...initial.pendingTargets];
+  const codeModeEngaged = attempt.codeModeEngaged === true;
+  const addPendingTarget = (target: FileTarget) => {
+    const existingIndex = pendingTargets.findIndex((candidate) =>
+      isSameFileTarget(candidate, target),
+    );
+    if (existingIndex >= 0) {
+      pendingTargets[existingIndex] = target;
+    } else {
+      pendingTargets.push(target);
+    }
+  };
+  const addMutationEvidence = (
+    targets: readonly FileTarget[] | undefined,
+    fallbackTarget?: FileTarget,
+    uncertain = false,
+  ) => {
+    if (targets !== undefined) {
+      for (const target of targets) {
+        addPendingTarget(uncertain ? { ...target, expected: "unknown" } : target);
+      }
+      return;
+    }
+    if (fallbackTarget) {
+      addPendingTarget(uncertain ? { ...fallbackTarget, expected: "unknown" } : fallbackTarget);
+    }
+  };
+  const clearVerifiedTarget = (target: FileTarget | undefined, expected: "present" | "absent") => {
+    if (!target) {
+      return;
+    }
+    pendingTargets = pendingTargets.filter((candidate) => {
+      const targetExpectation = candidate.expected ?? "present";
+      return !(
+        isSameFileTarget(candidate, target) &&
+        (targetExpectation === expected || targetExpectation === "unknown")
+      );
+    });
+  };
+  for (const tool of attempt.toolMetas ?? []) {
+    const toolName = normalizeLowercaseStringOrEmpty(tool.toolName);
+    if (toolName === "read" && tool.mutatingAction !== true) {
+      if (tool.isError !== true && tool.fileTargetVerified === true) {
+        clearVerifiedTarget(tool.fileTarget, "present");
+        continue;
+      }
+      if (tool.isError === true && tool.fileTargetAbsent === true) {
+        clearVerifiedTarget(tool.fileTarget, "absent");
+        continue;
+      }
+    }
+    if ((toolName === "exec" || toolName === "wait") && codeModeEngaged && tool.isError !== true) {
+      for (const target of tool.codeModeSuccessfulObservationFileTargets ?? []) {
+        clearVerifiedTarget(target, "present");
+      }
+      for (const target of tool.codeModeSuccessfulAbsenceObservationFileTargets ?? []) {
+        clearVerifiedTarget(target, "absent");
+      }
+    }
+    if (tool.isError === true) {
+      if (!codeModeEngaged) {
+        continue;
+      }
+      if (
+        (toolName === "write" || toolName === "edit" || toolName === "apply_patch") &&
+        tool.mutatingAction === true &&
+        tool.fileMutationExecutionStarted === true
+      ) {
+        addMutationEvidence(tool.fileTargets, tool.fileTarget, true);
+      } else if ((toolName === "exec" || toolName === "wait") && tool.sideEffectFree !== true) {
+        addMutationEvidence(tool.codeModeUnverifiedMutationFileTargets, undefined, true);
+      }
+      continue;
+    }
+    if (!codeModeEngaged) {
+      continue;
+    }
+    if (toolName !== "exec" && toolName !== "wait") {
+      continue;
+    }
+    if (tool.sideEffectFree === false) {
+      for (const target of tool.codeModeUnverifiedMutationFileTargets ?? []) {
+        if (target.expected === "unknown") {
+          addPendingTarget(target);
+        }
+      }
+    }
+  }
+  return { pendingTargets };
+}
+
+export function requiresCodeModeMutationVerification(attempt: {
+  codeModeEngaged?: boolean;
+  toolMetas?: ReadonlyArray<{
+    toolName?: string;
+    isError?: boolean;
+    mutatingAction?: boolean;
+    fileTarget?: FileTarget;
+    fileTargets?: FileTarget[];
+    fileMutationExecutionStarted?: true;
+    fileTargetVerified?: true;
+    fileTargetAbsent?: true;
+    sideEffectFree?: boolean;
+    codeModeLastCallSideEffectFree?: boolean;
+    codeModeSuccessfulObservationFileTargets?: FileTarget[];
+    codeModeSuccessfulAbsenceObservationFileTargets?: FileTarget[];
+    codeModeUnverifiedMutationFileTargets?: FileTarget[];
+  }>;
+}): boolean {
+  const state = resolveCodeModeMutationVerificationState(attempt);
+  return state.pendingTargets.length > 0;
 }
 
 type TerminalAttemptState = Pick<
@@ -808,6 +951,7 @@ export function resolveSettledToolTerminalContinuationInstruction(params: {
   executionContract?: string;
   allowEmptyStopContinuation?: boolean;
   allowCodeModeContinuation?: boolean;
+  requireCodeModeMutationVerification?: boolean;
   payloadCount: number;
   hasTerminalToolPresentation?: boolean;
   aborted: boolean;
@@ -817,6 +961,24 @@ export function resolveSettledToolTerminalContinuationInstruction(params: {
 }): string | null {
   const assistant = params.attempt.currentAttemptAssistant ?? params.attempt.lastAssistant;
   const currentAttemptAssistant = params.attempt.currentAttemptAssistant;
+  if (params.requireCodeModeMutationVerification === true) {
+    if (
+      params.hasTerminalToolPresentation ||
+      params.aborted ||
+      params.promptError != null ||
+      params.timedOut ||
+      params.attempt.itemLifecycle.activeCount > 0 ||
+      params.attempt.clientToolCalls ||
+      params.attempt.yieldDetected ||
+      params.attempt.didSendDeterministicApprovalPrompt ||
+      hasMessagingToolDeliveryEvidence(params.attempt) ||
+      hasAcceptedSessionSpawn(params.attempt.acceptedSessionSpawns) ||
+      hasAsyncStartedToolActivity(params.attempt.toolMetas)
+    ) {
+      return null;
+    }
+    return SETTLED_TOOL_TERMINAL_CONTINUATION_INSTRUCTION;
+  }
   const emptyStopAfterSettledTools = Boolean(
     params.allowEmptyStopContinuation &&
     currentAttemptAssistant?.stopReason === "stop" &&
@@ -964,7 +1126,7 @@ export function resolveReplaySafeCodeModeErrorRetryInstruction(params: {
     return null;
   }
   if (joinAssistantTexts(params.attempt.assistantTexts).length > 0) {
-    return null;
+    return REPLAY_SAFE_CODE_MODE_ERROR_RETRY_INSTRUCTION;
   }
   const assistant = params.attempt.currentAttemptAssistant ?? params.attempt.lastAssistant;
   if (assistant?.stopReason === "toolUse") {

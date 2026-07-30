@@ -94,7 +94,17 @@ function normalizeEmbeddedAttemptToolMetas(
         toolName: string;
         meta?: string;
         replaySafe?: boolean;
+        mutatingAction?: boolean;
+        fileTarget?: EmbeddedRunAttemptResult["toolMetas"][number]["fileTarget"];
+        fileTargets?: EmbeddedRunAttemptResult["toolMetas"][number]["fileTargets"];
+        fileMutationExecutionStarted?: true;
+        fileTargetVerified?: true;
+        fileTargetAbsent?: true;
         sideEffectFree?: boolean;
+        codeModeLastCallSideEffectFree?: boolean;
+        codeModeSuccessfulObservationFileTargets?: EmbeddedRunAttemptResult["toolMetas"][number]["codeModeSuccessfulObservationFileTargets"];
+        codeModeSuccessfulAbsenceObservationFileTargets?: EmbeddedRunAttemptResult["toolMetas"][number]["codeModeSuccessfulAbsenceObservationFileTargets"];
+        codeModeUnverifiedMutationFileTargets?: EmbeddedRunAttemptResult["toolMetas"][number]["codeModeUnverifiedMutationFileTargets"];
         codeModeRepairAllowed?: boolean;
         isError?: true;
         asyncStarted?: boolean;
@@ -110,6 +120,39 @@ function normalizeEmbeddedAttemptToolMetas(
       };
       if (entry.sideEffectFree !== undefined) {
         normalized.sideEffectFree = entry.sideEffectFree;
+      }
+      if (entry.mutatingAction !== undefined) {
+        normalized.mutatingAction = entry.mutatingAction;
+      }
+      if (entry.fileTarget !== undefined) {
+        normalized.fileTarget = entry.fileTarget;
+      }
+      if (entry.fileTargets !== undefined) {
+        normalized.fileTargets = entry.fileTargets;
+      }
+      if (entry.fileMutationExecutionStarted === true) {
+        normalized.fileMutationExecutionStarted = true;
+      }
+      if (entry.fileTargetVerified === true) {
+        normalized.fileTargetVerified = true;
+      }
+      if (entry.fileTargetAbsent === true) {
+        normalized.fileTargetAbsent = true;
+      }
+      if (entry.codeModeLastCallSideEffectFree !== undefined) {
+        normalized.codeModeLastCallSideEffectFree = entry.codeModeLastCallSideEffectFree;
+      }
+      if (entry.codeModeSuccessfulObservationFileTargets !== undefined) {
+        normalized.codeModeSuccessfulObservationFileTargets =
+          entry.codeModeSuccessfulObservationFileTargets;
+      }
+      if (entry.codeModeSuccessfulAbsenceObservationFileTargets !== undefined) {
+        normalized.codeModeSuccessfulAbsenceObservationFileTargets =
+          entry.codeModeSuccessfulAbsenceObservationFileTargets;
+      }
+      if (entry.codeModeUnverifiedMutationFileTargets !== undefined) {
+        normalized.codeModeUnverifiedMutationFileTargets =
+          entry.codeModeUnverifiedMutationFileTargets;
       }
       if (entry.codeModeRepairAllowed !== undefined) {
         normalized.codeModeRepairAllowed = entry.codeModeRepairAllowed;

@@ -10,9 +10,27 @@ const GUEST_TOOL_SCHEMAS = new Map<string, unknown>([
     "write",
     Type.Object({ path: Type.String(), content: Type.String() }, { additionalProperties: false }),
   ],
+  [
+    "edit",
+    Type.Object(
+      {
+        path: Type.String(),
+        edits: Type.Array(
+          Type.Object({
+            oldText: Type.String(),
+            newText: Type.String(),
+          }),
+        ),
+      },
+      { additionalProperties: false },
+    ),
+  ],
   ["status", Type.Object({}, { additionalProperties: true })],
   ["run", Type.Object({ command: Type.String() }, { additionalProperties: false })],
 ]);
+
+const TRANSLATED_READ_CODE =
+  'const __openclawResult = await tools["read"](JSON.parse("{\\"path\\":\\"facts.txt\\"}")); console.log("Recovered only the read guest tool call. Re-read the original request and complete every remaining step before answering; do not repeat this completed call. If the user requested a named key\'s value, use the value associated with that exact key, never the key name itself."); return __openclawResult;';
 
 function createFakeStream(params: { events?: unknown[]; resultMessage: unknown }) {
   return {
@@ -29,12 +47,16 @@ function createFakeStream(params: { events?: unknown[]; resultMessage: unknown }
   };
 }
 
-async function invoke(params: { events?: unknown[]; resultMessage: unknown }) {
+async function invoke(
+  params: { events?: unknown[]; resultMessage: unknown },
+  options?: { nativeToolNames?: ReadonlySet<string> },
+) {
   const baseFn = vi.fn(() => createFakeStream(params));
   const wrapped = wrapStreamFnTranslateCodeModeGuestToolCalls(
     baseFn as never,
     new Set(GUEST_TOOL_SCHEMAS.keys()),
     GUEST_TOOL_SCHEMAS,
+    options?.nativeToolNames,
   );
   const stream = await Promise.resolve(wrapped({} as never, {} as never, {} as never));
   for await (const event of stream) {
@@ -44,6 +66,102 @@ async function invoke(params: { events?: unknown[]; resultMessage: unknown }) {
 }
 
 describe("Code Mode outer guest tool-call repair", () => {
+  it("keeps an exact visible native method direct without rewriting cwd-like paths", async () => {
+    const message = {
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          name: "read",
+          arguments: { path: "state/workspaces/cell/facts.txt" },
+        },
+      ],
+    };
+
+    await expect(
+      invoke(
+        { resultMessage: message },
+        {
+          nativeToolNames: new Set(["read"]),
+        },
+      ),
+    ).resolves.toEqual({
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          name: "read",
+          arguments: { path: "state/workspaces/cell/facts.txt" },
+        },
+      ],
+    });
+  });
+
+  it.each(["tools.read", "tools/read"])(
+    "keeps guest alias %s on the exec bridge when the native tool is visible",
+    async (name) => {
+      const message = {
+        role: "assistant",
+        content: [{ type: "toolCall", name, arguments: { path: "facts.txt" } }],
+      };
+
+      await expect(
+        invoke(
+          { resultMessage: message },
+          {
+            nativeToolNames: new Set(["read"]),
+          },
+        ),
+      ).resolves.toEqual({
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            name: "exec",
+            arguments: { code: TRANSLATED_READ_CODE },
+          },
+        ],
+      });
+    },
+  );
+
+  it("repairs structured fields while keeping a visible native edit direct", async () => {
+    const message = {
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          name: "edit",
+          arguments: {
+            path: "editable.txt",
+            edits: '[{"oldText":"status=pending","newText":"status=verified"}]',
+          },
+        },
+      ],
+    };
+
+    await expect(
+      invoke(
+        { resultMessage: message },
+        {
+          nativeToolNames: new Set(["edit"]),
+        },
+      ),
+    ).resolves.toEqual({
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          name: "edit",
+          arguments: {
+            path: "editable.txt",
+            edits: [{ oldText: "status=pending", newText: "status=verified" }],
+          },
+        },
+      ],
+    });
+  });
+
   it.each(["read", "tools.read", "tools/read"])(
     "translates exact guest method %s into exec",
     async (name) => {
@@ -59,7 +177,7 @@ describe("Code Mode outer guest tool-call repair", () => {
             type: "toolCall",
             name: "exec",
             arguments: {
-              code: 'return await tools["read"](JSON.parse("{\\"path\\":\\"facts.txt\\"}"));',
+              code: TRANSLATED_READ_CODE,
             },
           },
         ],
@@ -103,7 +221,7 @@ describe("Code Mode outer guest tool-call repair", () => {
       type: "toolCall",
       name: "exec",
       arguments: {
-        code: 'return await tools["write"](JSON.parse("{\\"path\\":\\"result.txt\\",\\"content\\":\\"ok\\"}"));',
+        code: 'const __openclawResult = await tools["write"](JSON.parse("{\\"path\\":\\"result.txt\\",\\"content\\":\\"ok\\"}")); console.log("Recovered only the write guest tool call. Re-read the original request and complete every remaining step before answering; do not repeat this completed call. A mutation is not verification: when read-back or verification was requested, do not answer until it succeeds and matches the requested state."); return __openclawResult;',
       },
     };
     expect(streamedCall).toEqual(translated);
@@ -125,11 +243,76 @@ describe("Code Mode outer guest tool-call repair", () => {
           type: "toolCall",
           name: "exec",
           arguments: {
-            code: 'return await tools["read"](JSON.parse("{\\"path\\":\\"facts.txt\\"}"));',
+            code: TRANSLATED_READ_CODE,
           },
         },
       ],
     });
+  });
+
+  it("repairs structured fields before matching malformed exec arguments", async () => {
+    const message = {
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          name: "exec",
+          arguments: {
+            path: "editable.txt",
+            edits: '[{"oldText":"status=pending","newText":"status=verified"}]',
+          },
+        },
+      ],
+    };
+
+    const result = (await invoke({ resultMessage: message })) as {
+      content: Array<{ arguments: { code: string } }>;
+    };
+    expect(result.content[0]?.arguments.code).toContain(
+      'await tools["edit"](JSON.parse("{\\"path\\":\\"editable.txt\\",\\"edits\\":[{\\"oldText\\":\\"status=pending\\",\\"newText\\":\\"status=verified\\"}]}"))',
+    );
+  });
+
+  it("routes malformed exec arguments to a matching visible native tool", async () => {
+    const message = {
+      role: "assistant",
+      content: [{ type: "toolCall", name: "exec", arguments: { path: "facts.txt" } }],
+    };
+
+    await expect(
+      invoke(
+        { resultMessage: message },
+        {
+          nativeToolNames: new Set(["read"]),
+        },
+      ),
+    ).resolves.toEqual({
+      role: "assistant",
+      content: [{ type: "toolCall", name: "read", arguments: { path: "facts.txt" } }],
+    });
+  });
+
+  it("repairs stringified structured fields against the guest tool schema", async () => {
+    const message = {
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          name: "edit",
+          arguments: {
+            path: "editable.txt",
+            edits: '[{"oldText":"status=pending","newText":"status=verified"}]',
+          },
+        },
+      ],
+    };
+
+    const result = (await invoke({ resultMessage: message })) as {
+      content: Array<{ arguments: { code: string } }>;
+    };
+    expect(result.content[0]?.arguments.code).toContain(
+      'JSON.parse("{\\"path\\":\\"editable.txt\\",\\"edits\\":[{\\"oldText\\":\\"status=pending\\",\\"newText\\":\\"status=verified\\"}]}")',
+    );
   });
 
   it("promotes truncated guest XML and translates every terminal projection to exec", async () => {
@@ -174,7 +357,7 @@ describe("Code Mode outer guest tool-call repair", () => {
     }
     const result = await stream.result();
     const expectedArguments = {
-      code: 'return await tools["read"](JSON.parse("{\\"path\\":\\"facts.txt\\"}"));',
+      code: TRANSLATED_READ_CODE,
     };
 
     expect(result).toMatchObject({
@@ -239,7 +422,7 @@ describe("Code Mode outer guest tool-call repair", () => {
     }
     const result = await stream.result();
     const expectedArguments = {
-      code: 'return await tools["read"](JSON.parse("{\\"path\\":\\"facts.txt\\"}"));',
+      code: TRANSLATED_READ_CODE,
     };
     expect(streamedCall).toMatchObject({
       name: "exec",
@@ -323,7 +506,7 @@ describe("Code Mode outer guest tool-call repair", () => {
       ?.arguments.code;
 
     expect(code).toBe(
-      'return await tools["read"](JSON.parse("{\\"__proto__\\":{\\"safe\\":true},\\"nested\\":{\\"__proto__\\":\\"value\\"}}"));',
+      'const __openclawResult = await tools["read"](JSON.parse("{\\"__proto__\\":{\\"safe\\":true},\\"nested\\":{\\"__proto__\\":\\"value\\"}}")); console.log("Recovered only the read guest tool call. Re-read the original request and complete every remaining step before answering; do not repeat this completed call. If the user requested a named key\'s value, use the value associated with that exact key, never the key name itself."); return __openclawResult;',
     );
   });
 

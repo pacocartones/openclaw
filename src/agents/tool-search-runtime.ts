@@ -12,8 +12,8 @@ import {
 } from "./agent-tools.before-tool-call.js";
 import { runWithToolExecutionValidation } from "./agent-tools.execution-validation.js";
 import { getChannelAgentToolMeta } from "./channel-tool-metadata.js";
+import { repairCodeModeToolInput } from "./code-mode-tool-input-repair.js";
 import type { AgentToolResult } from "./runtime/index.js";
-import { buildToolMutationState } from "./tool-mutation.js";
 import { isAgentToolReplaySafe } from "./tool-replay-safety.js";
 import {
   compactToolSearchCatalogEntry,
@@ -26,9 +26,14 @@ import {
   tokenizeDocument,
   tokenizeQuery,
 } from "./tool-search-ranking.js";
+import {
+  buildToolSearchTelemetry,
+  isSideEffectFreeToolSearchCall,
+  ToolSearchMutationTelemetry,
+  type ToolSearchExecutionObservation,
+} from "./tool-search-telemetry.js";
 import { snapshotToolSearchTargetTranscriptResult } from "./tool-search-transcript.js";
 import type {
-  CatalogSource,
   CatalogVisibilityOptions,
   ToolSearchCallOptions,
   ToolSearchCatalogEntry,
@@ -193,18 +198,6 @@ function findEntryByExactId(
   return entry;
 }
 
-function isSideEffectFreeEntryCall(entry: ToolSearchCatalogEntry, input: unknown): boolean {
-  if (
-    entry.source !== "openclaw" ||
-    getPluginToolMeta(entry.tool as Parameters<typeof getPluginToolMeta>[0]) ||
-    getChannelAgentToolMeta(entry.tool as never)
-  ) {
-    return false;
-  }
-  const mutation = buildToolMutationState(entry.name, input);
-  return mutation.replaySafe && !mutation.mutatingAction;
-}
-
 export function readToolSearchId(args: unknown): string {
   const params = asToolParamsRecord(args);
   const value = params.id ?? params.toolId ?? params.name;
@@ -287,21 +280,6 @@ export function readToolSearchCallArgs(
     Object.entries(params).filter(([key]) => !wrapperKeys.has(key)),
   );
   return { id, input: flattenedInput };
-}
-
-function getTelemetry(catalog: ToolSearchCatalogSession) {
-  const sources: Record<CatalogSource, number> = { openclaw: 0, mcp: 0, client: 0 };
-  for (const entry of catalog.entries) {
-    sources[entry.source] += 1;
-  }
-  return {
-    catalogSize: catalog.entries.length,
-    sources,
-    searchCount: catalog.searchCount,
-    describeCount: catalog.describeCount,
-    callCount: catalog.callCount,
-    ...(catalog.callSequence ? { callSequence: [...catalog.callSequence] } : {}),
-  };
 }
 
 type CatalogSchemaName = "inputSchema" | "outputSchema";
@@ -472,6 +450,7 @@ function sanitizeToolCallIdPart(value: string): string {
 
 export class ToolSearchRuntime {
   private callSequence = 0;
+  private readonly mutationTelemetry: ToolSearchMutationTelemetry;
   private readonly searchIndexes = new WeakMap<
     ToolSearchCatalogSession,
     Map<boolean, CachedToolSearchIndex>
@@ -483,11 +462,18 @@ export class ToolSearchRuntime {
     private readonly options: {
       validateInput?: boolean | "core";
       enforceSideEffectFree?: boolean;
+      repairInput?: boolean;
     } = {},
-  ) {}
+  ) {
+    this.mutationTelemetry = new ToolSearchMutationTelemetry(ctx.cwd);
+  }
+
+  private resolveRuntimeCatalog(): ToolSearchCatalogSession {
+    return resolveCatalog(this.ctx);
+  }
 
   search = async (query: string, options?: { limit?: number } & CatalogVisibilityOptions) => {
-    const catalog = resolveCatalog(this.ctx);
+    const catalog = this.resolveRuntimeCatalog();
     catalog.searchCount += 1;
     const limit = readToolSearchLimit(options?.limit, this.config);
     const entries = visibleCatalogEntries(catalog, options);
@@ -550,12 +536,12 @@ export class ToolSearchRuntime {
   };
 
   all = (options?: CatalogVisibilityOptions) =>
-    visibleCatalogEntries(resolveCatalog(this.ctx), options).map((entry) =>
+    visibleCatalogEntries(this.resolveRuntimeCatalog(), options).map((entry) =>
       compactToolSearchCatalogEntry(entry),
     );
 
   namespaceEntries = () =>
-    resolveCatalog(this.ctx).entries.map((entry) =>
+    this.resolveRuntimeCatalog().entries.map((entry) =>
       Object.assign(compactToolSearchCatalogEntry(entry), {
         ...(entry.mcp ? { mcp: entry.mcp } : {}),
         parameters: entry.parameters ?? {},
@@ -563,13 +549,13 @@ export class ToolSearchRuntime {
     );
 
   describe = async (id: string, options?: CatalogVisibilityOptions & UnknownToolErrorOptions) => {
-    const catalog = resolveCatalog(this.ctx);
+    const catalog = this.resolveRuntimeCatalog();
     catalog.describeCount += 1;
     return describeEntry(findEntry(catalog, id, options, options));
   };
 
   call = async (id: string, input?: unknown, options?: ToolSearchCallOptions) => {
-    const catalog = resolveCatalog(this.ctx);
+    const catalog = this.resolveRuntimeCatalog();
     return await this.callEntry(catalog, findEntry(catalog, id, options, options), input, options);
   };
 
@@ -584,7 +570,7 @@ export class ToolSearchRuntime {
       recoverySurface?: UnknownToolRecoverySurface;
     },
   ) => {
-    const catalog = resolveCatalog(this.ctx);
+    const catalog = this.resolveRuntimeCatalog();
     return await this.callEntry(catalog, findEntryByExactId(catalog, id, options), input, options);
   };
 
@@ -594,7 +580,7 @@ export class ToolSearchRuntime {
   isReplaySafeExactId = (id: string): boolean => {
     let entry: ToolSearchCatalogEntry;
     try {
-      entry = findEntryByExactId(resolveCatalog(this.ctx), id);
+      entry = findEntryByExactId(this.resolveRuntimeCatalog(), id);
     } catch {
       return false;
     }
@@ -614,11 +600,11 @@ export class ToolSearchRuntime {
   isSideEffectFreeExactCall = (id: string, input: unknown): boolean => {
     let entry: ToolSearchCatalogEntry;
     try {
-      entry = findEntryByExactId(resolveCatalog(this.ctx), id);
+      entry = findEntryByExactId(this.resolveRuntimeCatalog(), id);
     } catch {
       return false;
     }
-    return isSideEffectFreeEntryCall(entry, input);
+    return isSideEffectFreeToolSearchCall(entry, input);
   };
 
   private readonly callEntry = async (
@@ -633,7 +619,10 @@ export class ToolSearchRuntime {
     },
   ) => {
     catalog.callCount += 1;
-    const normalizedInput = input ?? {};
+    const normalizedInput =
+      this.options.repairInput === true && entry.source === "openclaw"
+        ? repairCodeModeToolInput(entry.parameters, input ?? {})
+        : (input ?? {});
     await assertCatalogOutputSchemaIsValid(entry);
     const parentId = sanitizeToolCallIdPart(options?.parentToolCallId ?? "direct");
     const toolCallId = `tool_search_code:${parentId}:${entry.name}:${++this.callSequence}`;
@@ -665,12 +654,13 @@ export class ToolSearchRuntime {
     const needsExecutionBoundary =
       validateInput || observeExecutionStart || this.options.enforceSideEffectFree === true;
     let executionRecorded = false;
-    const recordExecution = () => {
+    let executionObservation: ToolSearchExecutionObservation | undefined;
+    const recordExecution = (finalInput: unknown) => {
       if (executionRecorded) {
         return;
       }
       executionRecorded = true;
-      (catalog.callSequence ??= []).push(entry.name);
+      executionObservation = this.mutationTelemetry.recordExecution(catalog, entry, finalInput);
     };
     const executionTool =
       needsExecutionBoundary && !isToolWrappedWithBeforeToolCallHook(entry.tool as never)
@@ -689,38 +679,48 @@ export class ToolSearchRuntime {
         onUpdate: options?.onUpdate,
         acceptResultBeforeProjection,
       });
-    const result = needsExecutionBoundary
-      ? await runWithToolExecutionValidation(
-          toolCallId,
-          async (finalInput) => {
-            if (validateInput) {
-              await assertCatalogInputMatchesSchema(entry, finalInput);
-            }
-            if (
-              this.options.enforceSideEffectFree === true &&
-              !isSideEffectFreeEntryCall(entry, finalInput)
-            ) {
-              throw new ToolInputError(
-                `Tool "${entry.id}" is unavailable under the read-only Code Mode policy.`,
-              );
-            }
-            // Preparation, policy, and optional schema validation all passed.
-            // A mutating tool may have observable effects after this boundary.
-            recordExecution();
-            options?.onExecutionStart?.(finalInput);
-          },
-          runExecution,
-        )
-      : await (async () => {
-          recordExecution();
-          return await runExecution();
-        })();
-    const acceptedResult = await acceptResultBeforeProjection(result);
+    let acceptedResult: AgentToolResult<unknown>;
+    try {
+      const result = needsExecutionBoundary
+        ? await runWithToolExecutionValidation(
+            toolCallId,
+            async (finalInput) => {
+              if (validateInput) {
+                await assertCatalogInputMatchesSchema(entry, finalInput);
+              }
+              if (
+                this.options.enforceSideEffectFree === true &&
+                !isSideEffectFreeToolSearchCall(entry, finalInput)
+              ) {
+                throw new ToolInputError(
+                  `Tool "${entry.id}" is unavailable under the read-only Code Mode policy.`,
+                );
+              }
+              // Preparation, policy, and optional schema validation all passed.
+              // A mutating tool may have observable effects after this boundary.
+              recordExecution(finalInput);
+              options?.onExecutionStart?.(finalInput);
+            },
+            runExecution,
+          )
+        : await (async () => {
+            recordExecution(normalizedInput);
+            return await runExecution();
+          })();
+      acceptedResult = await acceptResultBeforeProjection(result);
+    } catch (error) {
+      this.mutationTelemetry.recordFailure(catalog, executionObservation, error);
+      throw error;
+    }
+    if (executionObservation) {
+      this.mutationTelemetry.acceptResult(catalog, entry, executionObservation, acceptedResult);
+    }
     return { tool: compactToolSearchCatalogEntry(entry), result: acceptedResult };
   };
 
   telemetry() {
-    return getTelemetry(resolveCatalog(this.ctx));
+    const catalog = this.resolveRuntimeCatalog();
+    return buildToolSearchTelemetry(catalog, this.mutationTelemetry.snapshot());
   }
 }
 

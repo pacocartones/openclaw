@@ -79,6 +79,7 @@ export function resolveSettledTurnFinalizationRequest(input: {
   terminalState: EmbeddedRunTerminalState;
   settledTurnFinalizationAvailable: boolean;
   toolCapableContinuationAvailable?: boolean;
+  requireCodeModeMutationVerification?: boolean;
 }): string | null {
   if (!input.settledTurnFinalizationAvailable && input.toolCapableContinuationAvailable !== true) {
     return null;
@@ -112,18 +113,21 @@ export function resolveSettledTurnFinalizationRequest(input: {
   if (emptyAssistantReplyIsSilent) {
     return null;
   }
+  const allowRequiredReplyContinuation =
+    input.runParams.terminalReplyExpectation === "required" ||
+    (input.runParams.terminalReplyExpectation == null &&
+      (input.runParams.trigger == null ||
+        input.runParams.trigger === "user" ||
+        input.runParams.trigger === "manual"));
   return resolveSettledToolTerminalContinuationInstruction({
     provider: input.activeErrorContext.provider,
     modelId: input.activeErrorContext.model,
     modelApi: input.modelApi,
     executionContract: input.executionContract,
     allowCodeModeContinuation: input.toolCapableContinuationAvailable === true,
-    allowEmptyStopContinuation:
-      input.runParams.terminalReplyExpectation === "required" ||
-      (input.runParams.terminalReplyExpectation == null &&
-        (input.runParams.trigger == null ||
-          input.runParams.trigger === "user" ||
-          input.runParams.trigger === "manual")),
+    allowEmptyStopContinuation: allowRequiredReplyContinuation,
+    requireCodeModeMutationVerification:
+      allowRequiredReplyContinuation && input.requireCodeModeMutationVerification === true,
     payloadCount,
     hasTerminalToolPresentation: input.hasTerminalToolPresentation,
     aborted: terminalAborted,
@@ -325,7 +329,7 @@ export async function resolveEmbeddedRunTerminal(input: {
       forceReadOnlyTools
         ? RESTART_SAFE_CODE_MODE_CONTINUATION_INSTRUCTION
         : input.toolCapableContinuation.instruction,
-      false,
+      true,
     );
     log.warn(
       `settled Code Mode work stopped before final verification: runId=${runParams.runId} sessionId=${runParams.sessionId} ` +

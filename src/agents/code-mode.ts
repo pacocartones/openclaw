@@ -23,6 +23,7 @@ import { describeCodeModeNamespacesForPrompt } from "./code-mode-namespaces.js";
 import {
   codeModeRuntimeTesting,
   isCodeModeEngagedForModel,
+  prefersNativeCodeModeFileTools,
   readCode,
   readRunId,
   resolveCodeModeConfig,
@@ -41,7 +42,11 @@ import type { AgentToolUpdateCallback } from "./runtime/index.js";
 import { optionalStringEnum } from "./schema/typebox.js";
 import type { ToolDefinition } from "./sessions/index.js";
 import { resolveSwarmConfig } from "./swarm-config.js";
-import { isDirectVisibleCatalogTool } from "./tool-search-catalog.js";
+import { isAgentToolReplaySafe } from "./tool-replay-safety.js";
+import {
+  isDirectVisibleCatalogTool,
+  isDirectVisibleCoreCatalogTool,
+} from "./tool-search-catalog.js";
 import {
   addClientToolsToToolCatalog,
   applyToolCatalogCompaction,
@@ -61,6 +66,7 @@ export {
   CodeModeHeadlessAbortError,
   CodeModeHeadlessTimeoutError,
   isCodeModeEngagedForModel,
+  prefersNativeCodeModeFileTools,
   runCodeModeScriptHeadless,
   resolveCodeModeConfig,
 };
@@ -69,6 +75,7 @@ export type { CodeModeFailureCode, CodeModeHeadlessResult } from "./code-mode-ru
 type CodeModeToolContext = ToolSearchToolContext;
 
 const MAX_CODE_MODE_METHOD_INDEX_CHARS = 1_600;
+const MAX_CODE_MODE_METHOD_INDEX_ENTRIES = 12;
 const MAX_CODE_MODE_OUTPUT_HINT_CHARS = 96;
 const CODE_MODE_DIRECT_METHOD_PATTERN = /^[A-Za-z_$][A-Za-z0-9_$]*$/u;
 const CODE_MODE_RESERVED_METHOD_NAMES = new Set([
@@ -79,6 +86,12 @@ const CODE_MODE_RESERVED_METHOD_NAMES = new Set([
   CODE_MODE_EXEC_TOOL_NAME,
   CODE_MODE_WAIT_TOOL_NAME,
 ]);
+const CODE_MODE_METHOD_INDEX_PRIORITY = new Map(
+  ["read", "edit", "write", "apply_patch", "grep", "find", "ls"].map((name, index) => [
+    name,
+    index,
+  ]),
+);
 const CODE_MODE_METHOD_INDEX_HEADING =
   "Enabled direct methods inside code (await calls; short declared outputs follow `->`):";
 
@@ -129,7 +142,7 @@ export function collectCodeModeDirectToolSchemas(
 }
 
 function formatCodeModeMethodIndex(catalog: readonly ToolSearchCatalogEntry[]): string {
-  const lines = collectCodeModeDirectCatalogEntries(catalog)
+  const allLines = collectCodeModeDirectCatalogEntries(catalog)
     .map((entry) => compactToolSearchCatalogEntry(entry))
     .map((entry) => {
       const input = entry.input && entry.input !== "unknown" ? entry.input : "input?: unknown";
@@ -142,14 +155,25 @@ function formatCodeModeMethodIndex(catalog: readonly ToolSearchCatalogEntry[]): 
         name: entry.name,
       };
     })
-    // Prefer breadth: short callable signatures teach more exact method names
-    // than a few verbose result contracts under the same model-facing budget.
-    .toSorted((a, b) => a.line.length - b.line.length || a.name.localeCompare(b.name))
-    .map((entry) => entry.line);
+    // Keep the core coding workflow visible before filling the remaining prompt
+    // budget with short signatures. Small models cannot reliably discover a
+    // requested method after prompt compaction has hidden it.
+    .toSorted((a, b) => {
+      const aPriority = CODE_MODE_METHOD_INDEX_PRIORITY.get(a.name);
+      const bPriority = CODE_MODE_METHOD_INDEX_PRIORITY.get(b.name);
+      if (aPriority !== undefined || bPriority !== undefined) {
+        return (
+          (aPriority ?? CODE_MODE_METHOD_INDEX_PRIORITY.size) -
+          (bPriority ?? CODE_MODE_METHOD_INDEX_PRIORITY.size)
+        );
+      }
+      return a.line.length - b.line.length || a.name.localeCompare(b.name);
+    });
+  const lines = allLines.slice(0, MAX_CODE_MODE_METHOD_INDEX_ENTRIES).map((entry) => entry.line);
   if (lines.length === 0) {
     return "";
   }
-  const fullIndex = renderCodeModeMethodIndex(lines, lines.length);
+  const fullIndex = renderCodeModeMethodIndex(lines, allLines.length);
   if (fullIndex.length <= MAX_CODE_MODE_METHOD_INDEX_CHARS) {
     return fullIndex;
   }
@@ -164,13 +188,24 @@ function formatCodeModeMethodIndex(catalog: readonly ToolSearchCatalogEntry[]): 
       CODE_MODE_METHOD_INDEX_HEADING.length +
       candidateLineLength +
       2 +
-      codeModeMethodIndexFooter(included.length + 1, lines.length).length;
+      codeModeMethodIndexFooter(included.length + 1, allLines.length).length;
     if (candidateLength <= MAX_CODE_MODE_METHOD_INDEX_CHARS) {
       included.push(line);
       includedLineLength = candidateLineLength;
     }
   }
-  return renderCodeModeMethodIndex(included, lines.length);
+  return renderCodeModeMethodIndex(included, allLines.length);
+}
+
+function filterReadOnlyCodeModeCatalog(
+  catalog: readonly ToolSearchCatalogEntry[],
+): ToolSearchCatalogEntry[] {
+  // Recovery execution admits only the audited replay-safe core surface.
+  // Keep the prompt on that same boundary so models never see unavailable
+  // mutation, plugin, client, or MCP methods during verification.
+  return catalog.filter(
+    (entry) => entry.sourceName === "core" && isAgentToolReplaySafe(entry.tool),
+  );
 }
 
 function createCodeModeExecDescription(
@@ -180,6 +215,7 @@ function createCodeModeExecDescription(
   const directMethodNames = catalog ? collectCodeModeDirectToolNames(catalog) : new Set<string>();
   const hasRead = directMethodNames.has("read");
   const hasWrite = directMethodNames.has("write");
+  const hasEdit = directMethodNames.has("edit");
   const namespacePrompt = describeCodeModeNamespacesForPrompt(catalog);
   // A known run catalog with neither MCP nor swarm has no virtual API files.
   const catalogKnown = catalog !== undefined;
@@ -201,32 +237,55 @@ function createCodeModeExecDescription(
   const skillsGuidance = ctx.codeModeSkills?.length
     ? " Skills are available through the async `skills` global: use `await skills.list()` and `await skills.read(name)`."
     : "";
+  const readOnlyGuidance =
+    ctx.forceReadOnlyTools === true
+      ? " This is a read-only recovery after a prior mutation may have completed. Do not call write, edit, apply_patch, or any unavailable method; inspect the existing state and return the requested answer."
+      : "";
   const methodIndex = catalog ? formatCodeModeMethodIndex(catalog) : "";
   const writeVerificationGuidance =
     hasRead && hasWrite ? " For write verification, include write and read in one cell." : "";
-  const readGuidance = hasRead ? ' Read files with `await tools.read({ path: "notes.txt" })`.' : "";
+  const editGuidance = hasEdit
+    ? ' If the user asks for an edit or exact replacement, `tools.edit` is mandatory: use `await tools.edit({ path: "file.txt", edits: [{ oldText: "old", newText: "new" }] })`; `oldText` is the exact text being removed and `newText` is its replacement; never substitute `tools.write`.'
+    : "";
+  const readGuidance = hasRead
+    ? ' Read files with `await tools.read({ path: "notes.txt" })`. For multiple files, call every read in the same exec before answering.'
+    : "";
   return (
-    "Use only injected Code Mode globals; Node.js modules, shell, `require`, `import`, `process`, and `fs` are unavailable. Never skip a requested verification or answer from a known value before its tool call." +
+    "Use only injected Code Mode globals; Node.js modules, shell, `require`, `import`, `process`, and `fs` are unavailable. A requested verification is incomplete until its verification tool call runs; knowing the value is not verification." +
     writeVerificationGuidance +
+    editGuidance +
     readGuidance +
-    " Text results expose `.content`, string methods, and `.field(name)` for `key=value` or `key: value`. Sandboxed `console` writes tool output. Explicitly `return` the final value; a trailing guest tool call or local result expression is auto-returned. Prefer enabled direct methods on `tools`. Use workspace-relative paths, never `/workspace`. Await dependent calls in order; use `Promise.all` only for independent work. If a direct method is unavailable, use ALL_TOOLS or `await tools.search(query)`, then `tools.callValue(id, args)`. Never invent or transform ids. Return unknown result shapes raw. Nested calls keep normal policy and approvals." +
+    " Text results expose `.content`, string methods, and `.field(name)` for `key=value` or `key: value`. For a named key's value, call `.field()` with that exact key and use its result; never use the key name as the value. Sandboxed `console` writes tool output. Explicitly `return` the final value; a trailing guest tool call or local result expression is auto-returned. Prefer enabled direct methods on `tools`. Use the requested workspace-relative path exactly; never add `state/workspaces` or `/workspace` prefixes. Await dependent calls in order; use `Promise.all` only for independent work. If a direct method is unavailable, use ALL_TOOLS or `await tools.search(query)`, then `tools.callValue(id, args)`. Never invent or transform ids. Return unknown result shapes raw. Nested calls keep normal policy and approvals." +
     apiGuidance +
     mcpGuidance +
     swarmGuidance +
     nodesGuidance +
     skillsGuidance +
+    readOnlyGuidance +
     (namespacePrompt ? `\n\n${namespacePrompt}` : "") +
     (methodIndex ? `\n\n${methodIndex}` : "")
   );
 }
 
-function createCodeModeCodeDescription(catalog?: readonly ToolSearchCatalogEntry[]): string {
+function createCodeModeCodeDescription(
+  catalog?: readonly ToolSearchCatalogEntry[],
+  forceReadOnlyTools = false,
+): string {
   const directMethodNames = catalog ? collectCodeModeDirectToolNames(catalog) : new Set<string>();
+  const editExample = directMethodNames.has("edit")
+    ? ' Asked to edit: await tools.edit({path:"file.txt",edits:[{oldText:"exact old",newText:"exact new"}]}); oldText is removed, newText replaces it; never use write.'
+    : "";
+  const multiReadExample = directMethodNames.has("read")
+    ? ' Multiple reads: const a=await tools.read({path:"first.txt"}); const b=await tools.read({path:"second.txt"});'
+    : "";
+  if (forceReadOnlyTools) {
+    return `Read-only recovery: a prior mutation may already have completed. Do not repeat mutations or call write/edit/apply_patch or any missing method. Use available read-only tools to verify existing state, then return the exact requested answer.${multiReadExample} For named text fields use r.field("requested_key"); preserve the string exactly. Replace every example path/key with the exact user request. No imports/process/fs.`;
+  }
   if (directMethodNames.has("read") && directMethodNames.has("write")) {
-    return 'Obey steps in order. Read -> write -> verify example: const source=await tools.read({path:"input.txt"}); const value=source.field("key"); await tools.write({path:"output.txt",content:value}); return (await tools.read({path:"output.txt"})).content; Adapt paths/key. No imports/process/fs.';
+    return `Obey every step in one exec.${editExample}${multiReadExample} If the prompt asks to verify or read back after a write/edit, code ending at the mutation is invalid; finish with the requested read and confirm the requested state. Read -> write -> verify: const source=await tools.read({path:"input.txt"}); const value=source.field("requested_key"); await tools.write({path:"output.txt",content:value}); return (await tools.read({path:"output.txt"})).content; field() returns a string: preserve it exactly and do not use Number/parseInt/parseFloat unless numeric conversion was requested. Use the extracted value, never the key name. Replace every example path/key with the exact user request. No imports/process/fs.`;
   }
   if (directMethodNames.has("read")) {
-    return 'Obey every step. Read: const r=await tools.read(a); return r.content or r.field("key"). No imports/process/fs.';
+    return `Obey every step in one exec.${multiReadExample} Return raw content or call r.field("requested_key"); replace every example path/key with the exact user request. No imports/process/fs.`;
   }
   return "Obey every step with enabled tools. Await calls; return the final value. No imports/process/fs.";
 }
@@ -234,12 +293,16 @@ function createCodeModeCodeDescription(catalog?: readonly ToolSearchCatalogEntry
 function setCodeModeCodeDescription(
   tool: AnyAgentTool,
   catalog?: readonly ToolSearchCatalogEntry[],
+  forceReadOnlyTools = false,
 ): void {
   const parameters = tool.parameters as {
     properties?: { code?: { description?: string } };
   };
   if (parameters.properties?.code) {
-    parameters.properties.code.description = createCodeModeCodeDescription(catalog);
+    parameters.properties.code.description = createCodeModeCodeDescription(
+      catalog,
+      forceReadOnlyTools,
+    );
   }
 }
 
@@ -252,7 +315,7 @@ export function createCodeModeTools(ctx: CodeModeToolContext): AnyAgentTool[] {
       // `command` and `restartSafe` stay runtime-only for hook compatibility.
       // Replay safety is host policy, not a property models should self-certify.
       code: Type.String({
-        description: createCodeModeCodeDescription(),
+        description: createCodeModeCodeDescription(undefined, ctx.forceReadOnlyTools === true),
       }),
       language: optionalStringEnum(["javascript", "typescript"] as const, {
         description: "Defaults to javascript.",
@@ -331,8 +394,10 @@ export function applyCodeModeCatalog(params: {
   catalogRef?: ToolSearchCatalogRef;
   toolHookContext?: HookContext;
   directToolNames?: Iterable<string>;
+  directCoreToolNames?: Iterable<string>;
   codeModeSkills?: CodeModeToolContext["codeModeSkills"];
   forceEnabled?: boolean;
+  forceReadOnlyTools?: boolean;
 }) {
   const config = resolveCodeModeConfig(params.config, params.agentId);
   // Engagement (including "auto" per-model resolution) is decided by the run
@@ -353,6 +418,7 @@ export function applyCodeModeCatalog(params: {
         tool.name !== TOOL_CALL_RAW_TOOL_NAME),
   );
   const directToolNames = new Set(params.directToolNames);
+  const directCoreToolNames = new Set(params.directCoreToolNames);
   const compacted = applyToolCatalogCompaction({
     ...params,
     tools,
@@ -361,14 +427,17 @@ export function applyCodeModeCatalog(params: {
     // Code mode never exposes core shell/file tools just because structured
     // search does; only explicitly required, trusted direct tools may remain.
     isVisibleCatalogTool: (tool) =>
-      directToolNames.has(tool.name) && isDirectVisibleCatalogTool(tool, directToolNames),
+      (directToolNames.has(tool.name) && isDirectVisibleCatalogTool(tool, directToolNames)) ||
+      isDirectVisibleCoreCatalogTool(tool, directCoreToolNames),
     shouldCatalogTool: (tool) => !isCodeModeControlTool(tool),
   });
   // Only the catalog ref reflects the freshly compacted run catalog. Without it
   // the real catalog is registered under session keys and resolved later, so
   // keep the catalog "unknown" (undefined) rather than an empty array that would
   // wrongly strip MCP/namespace guidance from the exec description.
-  const visibleCatalog = params.catalogRef?.current?.entries;
+  const catalog = params.catalogRef?.current?.entries;
+  const visibleCatalog =
+    catalog && params.forceReadOnlyTools ? filterReadOnlyCodeModeCatalog(catalog) : catalog;
   for (const tool of compacted.tools) {
     if (tool.name === CODE_MODE_EXEC_TOOL_NAME) {
       tool.description = createCodeModeExecDescription(
@@ -381,10 +450,11 @@ export function applyCodeModeCatalog(params: {
           runId: params.runId,
           catalogRef: params.catalogRef,
           codeModeSkills: params.codeModeSkills,
+          forceReadOnlyTools: params.forceReadOnlyTools,
         },
         visibleCatalog,
       );
-      setCodeModeCodeDescription(tool, visibleCatalog);
+      setCodeModeCodeDescription(tool, visibleCatalog, params.forceReadOnlyTools === true);
     }
   }
   return compacted;

@@ -241,6 +241,19 @@ export function isDirectVisibleCatalogTool(
   );
 }
 
+export function isDirectVisibleCoreCatalogTool(
+  tool: AnyAgentTool,
+  directToolNames: ReadonlySet<string>,
+): boolean {
+  const classified = classifyTool(tool);
+  return (
+    classified.source === "openclaw" &&
+    classified.sourceName === "core" &&
+    directToolNames.has(tool.name) &&
+    isCoreCodingSurfaceToolName(tool.name)
+  );
+}
+
 export function registerHeadlessToolSearchCatalog(params: {
   catalogRef: ToolSearchCatalogRef;
   tools: readonly AnyAgentTool[];
@@ -289,6 +302,10 @@ function registerToolSearchCatalog(params: {
     describeCount: prior?.describeCount ?? 0,
     callCount: prior?.callCount ?? 0,
     callSequence: prior?.callSequence ? [...prior.callSequence] : [],
+    callFailureCount: prior?.callFailureCount ?? 0,
+    callSideEffectFreeSequence: prior?.callSideEffectFreeSequence
+      ? [...prior.callSideEffectFreeSequence]
+      : [],
   };
   catalogFingerprints.set(next, catalogEntriesFingerprint(next.entries));
   params.catalogRef.current = next;

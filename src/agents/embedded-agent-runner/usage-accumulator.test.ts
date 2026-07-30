@@ -102,6 +102,7 @@ describe("usage-accumulator", () => {
         describe: 3,
         call: 7,
         sequence: ["read", "write", "read"],
+        failures: 0,
       });
       expect(acc.codeModeEngaged).toBe(true);
     });
@@ -142,6 +143,7 @@ describe("usage-accumulator", () => {
       expect(acc.toolSummary).toEqual({
         calls: 5,
         tools: ["exec", "read", "wait", "write"],
+        sequence: ["exec", "read", "exec", "wait", "write"],
         failures: 2,
       });
     });

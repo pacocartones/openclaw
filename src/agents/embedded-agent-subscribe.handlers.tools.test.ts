@@ -55,6 +55,14 @@ function endTool(ctx: ToolHandlerContext, event: ToolExecutionEndEvent) {
   return handleToolExecutionEnd(ctx, { type: "tool_execution_end", ...event });
 }
 
+function trustCoreToolCall(toolCallId: string, toolName: string): void {
+  recordStructuredReplayTrustForToolCall(
+    toolCallId,
+    { name: toolName, execute: vi.fn() } as never,
+    "run-test",
+  );
+}
+
 async function executeTool(
   ctx: ToolHandlerContext,
   event: ToolExecutionStartEvent & Omit<ToolExecutionEndEvent, "toolName" | "toolCallId">,
@@ -1354,6 +1362,194 @@ describe("handleToolExecutionEnd sessions_spawn terminal success tracking", () =
 });
 
 describe("handleToolExecutionEnd mutating failure recovery", () => {
+  it("marks a native read as verification only after prior mutations settle", async () => {
+    const { ctx } = createTestContext();
+
+    trustCoreToolCall("tool-write-sequential", "write");
+    await executeTool(ctx, {
+      toolName: "write",
+      toolCallId: "tool-write-sequential",
+      args: { path: "/tmp/demo.txt", content: "updated" },
+      isError: false,
+      result: { ok: true },
+    });
+    trustCoreToolCall("tool-read-sequential", "read");
+    await executeTool(ctx, {
+      toolName: "read",
+      toolCallId: "tool-read-sequential",
+      args: { path: "/tmp/demo.txt" },
+      isError: false,
+      result: { content: [{ type: "text", text: "updated" }] },
+    });
+
+    expect(ctx.state.toolMetas.at(-1)).toMatchObject({
+      toolName: "read",
+      fileTarget: { path: "/tmp/demo.txt" },
+      fileTargetVerified: true,
+    });
+  });
+
+  it("does not let an overlapping native read verify an in-flight mutation", async () => {
+    const { ctx } = createTestContext();
+
+    trustCoreToolCall("tool-write-overlap", "write");
+    await startTool(ctx, {
+      toolName: "write",
+      toolCallId: "tool-write-overlap",
+      args: { path: "/tmp/demo.txt", content: "updated" },
+    });
+    trustCoreToolCall("tool-read-overlap", "read");
+    await startTool(ctx, {
+      toolName: "read",
+      toolCallId: "tool-read-overlap",
+      args: { path: "/tmp/demo.txt" },
+    });
+    await endTool(ctx, {
+      toolName: "read",
+      toolCallId: "tool-read-overlap",
+      isError: false,
+      result: { content: [{ type: "text", text: "stale" }] },
+    });
+    await endTool(ctx, {
+      toolName: "write",
+      toolCallId: "tool-write-overlap",
+      isError: false,
+      result: { ok: true },
+    });
+
+    const readMeta = ctx.state.toolMetas.find((entry) => entry.toolName === "read");
+    expect(readMeta).toMatchObject({
+      toolName: "read",
+      fileTarget: { path: "/tmp/demo.txt" },
+    });
+    expect(readMeta).not.toHaveProperty("fileTargetVerified");
+  });
+
+  it("does not trust a shadowed read tool as workspace verification", async () => {
+    const { ctx } = createTestContext();
+
+    trustCoreToolCall("tool-write-before-shadowed-read", "write");
+    await executeTool(ctx, {
+      toolName: "write",
+      toolCallId: "tool-write-before-shadowed-read",
+      args: { path: "/tmp/demo.txt", content: "updated" },
+      isError: false,
+      result: { ok: true },
+    });
+    await executeTool(ctx, {
+      toolName: "read",
+      toolCallId: "tool-shadowed-read",
+      args: { path: "/tmp/demo.txt" },
+      isError: false,
+      result: { content: [{ type: "text", text: "remote record" }] },
+    });
+
+    expect(ctx.state.toolMetas.at(-1)).not.toHaveProperty("fileTargetVerified");
+  });
+
+  it("does not mark a pre-dispatch mutation failure as uncertain execution", async () => {
+    const { ctx } = createTestContext();
+
+    trustCoreToolCall("tool-write-validation-failure", "write");
+    await executeTool(ctx, {
+      toolName: "write",
+      toolCallId: "tool-write-validation-failure",
+      args: { path: "/tmp/demo.txt" },
+      isError: true,
+      executionStarted: false,
+      errorKind: "argument-validation",
+      result: { details: { status: "error", error: "missing content" } },
+    });
+
+    expect(ctx.state.toolMetas.at(-1)).not.toHaveProperty("fileMutationExecutionStarted");
+  });
+
+  it("preserves apply_patch targets reported after a failed mutation", async () => {
+    const { ctx } = createTestContext();
+
+    trustCoreToolCall("tool-apply-patch-partial-failure", "apply_patch");
+    await executeTool(ctx, {
+      toolName: "apply_patch",
+      toolCallId: "tool-apply-patch-partial-failure",
+      args: { input: "*** Begin Patch\n*** End Patch" },
+      isError: true,
+      result: {
+        details: {
+          status: "failed",
+          summary: {
+            added: ["a.ts"],
+            modified: ["b.ts"],
+            deleted: ["old.ts"],
+          },
+        },
+      },
+    });
+
+    expect(ctx.state.toolMetas.at(-1)).toMatchObject({
+      toolName: "apply_patch",
+      isError: true,
+      mutatingAction: true,
+      fileMutationExecutionStarted: true,
+      fileTargets: [{ path: "a.ts" }, { path: "b.ts" }, { path: "old.ts", expected: "absent" }],
+    });
+  });
+
+  it("preserves apply_patch input targets when a native mutation fails without a summary", async () => {
+    const { ctx } = createTestContext();
+
+    trustCoreToolCall("tool-apply-patch-thrown-failure", "apply_patch");
+    await executeTool(ctx, {
+      toolName: "apply_patch",
+      toolCallId: "tool-apply-patch-thrown-failure",
+      args: {
+        input: [
+          "*** Begin Patch",
+          "*** Update File: old.ts",
+          "*** Move to: new.ts",
+          "@@",
+          "-old",
+          "+new",
+          "*** End Patch",
+        ].join("\n"),
+      },
+      isError: true,
+      result: {
+        details: {
+          status: "failed",
+          error: "patch crashed after applying an earlier hunk",
+        },
+      },
+    });
+
+    expect(ctx.state.toolMetas.at(-1)).toMatchObject({
+      toolName: "apply_patch",
+      isError: true,
+      mutatingAction: true,
+      fileMutationExecutionStarted: true,
+      fileTargets: [
+        { path: "old.ts", expected: "absent" },
+        { path: "new.ts", expected: "present" },
+      ],
+    });
+
+    trustCoreToolCall("tool-read-moved-source", "read");
+    await executeTool(ctx, {
+      toolName: "read",
+      toolCallId: "tool-read-moved-source",
+      args: { path: "old.ts" },
+      isError: true,
+      result: {
+        details: { status: "failed", code: "ENOENT", error: "file not found" },
+      },
+    });
+    expect(ctx.state.toolMetas.at(-1)).toMatchObject({
+      toolName: "read",
+      isError: true,
+      fileTarget: { path: "old.ts" },
+      fileTargetAbsent: true,
+    });
+  });
+
   it("marks middleware failures on the last tool error", async () => {
     const { ctx } = createTestContext();
 
@@ -1591,6 +1787,7 @@ describe("handleToolExecutionEnd mutating failure recovery", () => {
       toolName: "exec",
       meta: undefined,
       replaySafe: true,
+      mutatingAction: true,
       sideEffectFree: true,
       codeModeRepairAllowed: true,
       isError: true,
@@ -1626,6 +1823,7 @@ describe("handleToolExecutionEnd mutating failure recovery", () => {
       toolName: "exec",
       meta: undefined,
       replaySafe: false,
+      mutatingAction: true,
       sideEffectFree: true,
     });
     expect(ctx.state.replayState).toEqual({
@@ -1655,6 +1853,7 @@ describe("handleToolExecutionEnd mutating failure recovery", () => {
       toolName: "exec",
       meta: undefined,
       replaySafe: true,
+      mutatingAction: true,
       sideEffectFree: true,
     });
     expect(ctx.state.replayState).toEqual({
@@ -1676,6 +1875,13 @@ describe("handleToolExecutionEnd mutating failure recovery", () => {
           status: "completed",
           replaySafe: true,
           sideEffectFree: false,
+          telemetry: {
+            callSequence: ["read", "write"],
+            callSideEffectFreeSequence: [true, false],
+            lastCallSideEffectFree: false,
+            successfulObservationFileTargets: [{ path: "facts.txt" }],
+            unverifiedMutationFileTargets: [{ path: "result.txt", expected: "unknown" }],
+          },
         },
       },
     });
@@ -1684,7 +1890,11 @@ describe("handleToolExecutionEnd mutating failure recovery", () => {
       toolName: "exec",
       meta: undefined,
       replaySafe: false,
+      mutatingAction: true,
       sideEffectFree: false,
+      codeModeLastCallSideEffectFree: false,
+      codeModeSuccessfulObservationFileTargets: [{ path: "facts.txt" }],
+      codeModeUnverifiedMutationFileTargets: [{ path: "result.txt", expected: "unknown" }],
     });
     expect(ctx.state.replayState).toEqual({
       replayInvalid: true,
@@ -2829,6 +3039,11 @@ describe("handleToolExecutionEnd derived tool events", () => {
       modified: ["b.ts"],
       deleted: ["c.ts"],
       summary: "1 added, 1 modified, 1 deleted",
+    });
+    expect(ctx.state.toolMetas.at(-1)).toMatchObject({
+      toolName: "apply_patch",
+      mutatingAction: true,
+      fileTargets: [{ path: "a.ts" }, { path: "b.ts" }],
     });
   });
 });

@@ -1404,7 +1404,7 @@ describe("resolveModel", () => {
     expect(discoverModels).not.toHaveBeenCalled();
   });
 
-  it("merges bundled static media input into resolved models when opted in", async () => {
+  it("merges bundled static capability metadata into resolved models when opted in", async () => {
     mockDiscoveredModel(discoverModels, {
       provider: "openai",
       modelId: "gpt-5.5-pro",
@@ -1432,6 +1432,10 @@ describe("resolveModel", () => {
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow: 272_000,
       maxTokens: 128_000,
+      compat: {
+        codeMode: "preferred",
+        supportsTemperature: false,
+      },
       mediaInput: {
         image: { maxSidePx: 6000, preferredSidePx: 2048, tokenMode: "detail" },
       },
@@ -1445,7 +1449,12 @@ describe("resolveModel", () => {
       skipAgentDiscovery: true,
     });
 
-    expect((expectResolvedModel(result) as { mediaInput?: unknown }).mediaInput).toEqual({
+    const model = expectResolvedModel(result);
+    expect(model.compat).toEqual({
+      codeMode: "preferred",
+      supportsTemperature: false,
+    });
+    expect((model as { mediaInput?: unknown }).mediaInput).toEqual({
       image: { maxSidePx: 6000, preferredSidePx: 2048, tokenMode: "detail" },
     });
     expect(resolveBundledStaticCatalogModelMock).toHaveBeenCalledWith({

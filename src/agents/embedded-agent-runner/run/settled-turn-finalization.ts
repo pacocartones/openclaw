@@ -13,6 +13,7 @@ import { runEmbeddedSettledTurnFinalizationWithBackend } from "./backend.js";
 import {
   NORMAL_CODE_MODE_CONTINUATION_INSTRUCTION,
   RESTART_SAFE_CODE_MODE_CONTINUATION_INSTRUCTION,
+  resolveCodeModeMutationVerificationState,
   resolveCodeModeContinuationToolPolicy,
 } from "./incomplete-turn.js";
 import { withEmbeddedRunLaneProgressHeartbeat } from "./lane-runtime.js";
@@ -22,6 +23,7 @@ import {
 } from "./terminal-outcome.js";
 import { prepareEmbeddedRunTerminal } from "./terminal-preparation.js";
 import { resolveSettledTurnFinalizationRequest } from "./terminal-resolution.js";
+import type { EmbeddedRunTerminalRetryState } from "./terminal-retry-state.js";
 import type { EmbeddedRunAttemptParams, EmbeddedRunAttemptResult } from "./types.js";
 
 type TerminalPreparationInput = Parameters<typeof prepareEmbeddedRunTerminal>[0];
@@ -58,6 +60,7 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
     >[0]["executionContract"];
     hasTerminalToolPresentation: boolean;
     noteLaneTaskProgress: () => void;
+    retryState: EmbeddedRunTerminalRetryState;
   };
 }) {
   const initial = input.initial;
@@ -75,7 +78,19 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
     terminalState: initial.terminalState,
   });
   const settledAttemptToolSummary = prepared.attemptToolSummary;
-  const codeModeContinuationToolPolicy = resolveCodeModeContinuationToolPolicy(initial.attempt);
+  const codeModeMutationVerification = resolveCodeModeMutationVerificationState(
+    initial.attempt,
+    input.finalization.retryState.codeModeMutationVerification,
+  );
+  input.finalization.retryState.codeModeMutationVerification = codeModeMutationVerification;
+  const codeModeMutationVerificationRequired =
+    codeModeMutationVerification.pendingTargets.length > 0;
+  // Pending targets outlive the attempt that created them. Keep every later
+  // continuation read-only, including normal-tool fallback attempts, until a
+  // successfully ordered read verifies the mutation.
+  const codeModeContinuationToolPolicy = codeModeMutationVerificationRequired
+    ? "read-only"
+    : resolveCodeModeContinuationToolPolicy(initial.attempt);
   const prompt = resolveSettledTurnFinalizationRequest({
     runParams: input.terminalBase.runParams,
     attempt,
@@ -90,6 +105,7 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
     settledTurnFinalizationAvailable:
       typeof input.finalization.harness.finalizeSettledTurn === "function",
     toolCapableContinuationAvailable: codeModeContinuationToolPolicy !== null,
+    requireCodeModeMutationVerification: codeModeMutationVerificationRequired,
   });
   if (!prompt) {
     return {

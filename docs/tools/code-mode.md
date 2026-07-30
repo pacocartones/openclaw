@@ -14,8 +14,11 @@ Code mode is an experimental OpenClaw agent-runtime feature. It defaults to the
 code-mode performers; every other model keeps normal tool exposure. When
 engaged, the model no longer sees every enabled tool schema; instead, it sees
 `exec`, `wait`, and any direct-only tool whose structured result cannot cross
-the JSON-only guest bridge. The model writes a small JavaScript or TypeScript
-program that searches, describes, and calls the hidden tool catalog.
+the JSON-only guest bridge. Catalog-preferred models using the lean tool
+surface can also keep native `read`, `edit`, `write`, and `apply_patch`; forced
+Code Mode on an unflagged model keeps file operations behind the guest bridge.
+The model writes a small JavaScript or TypeScript program that searches,
+describes, and calls the hidden tool catalog.
 
 This page documents OpenClaw code mode, not Codex Code Mode. The two features
 share a name and the same control-tool names (`exec`, `wait`), but they are
@@ -44,7 +47,9 @@ commands are rejected before the QuickJS worker starts with actionable
 
 - The model-visible tool list becomes `exec`, `wait`, plus any direct-only tool
   such as `computer` or the native-vision `image` loader whose image result
-  cannot survive the guest bridge.
+  cannot survive the guest bridge. With the lean tool surface, a
+  catalog-preferred model can additionally keep native `read`, `edit`, `write`,
+  and `apply_patch`.
 - `exec` evaluates model-generated JavaScript or TypeScript in an isolated
   QuickJS-WASI worker thread.
 - Every catalog-eligible enabled tool (OpenClaw core, plugin, MCP, client) is hidden as a
@@ -197,9 +202,12 @@ OPENCLAW_DEBUG_MODEL_PAYLOAD=tools \
 openclaw gateway
 ```
 
-With code mode active, the logged model-facing tool names should be `exec` and
-`wait`. For the full redacted provider payload, add
-`OPENCLAW_DEBUG_MODEL_PAYLOAD=full-redacted` for a short debugging session.
+With code mode active, the logged model-facing tools should include `exec` and
+`wait`. Catalog-preferred models using the lean tool surface may also show
+native `read`, `edit`, `write`, and `apply_patch`; tools whose results cannot
+cross the guest bridge can remain direct as well. For the full redacted
+provider payload, add `OPENCLAW_DEBUG_MODEL_PAYLOAD=full-redacted` for a short
+debugging session.
 
 ## Use Swarm for agent fan-out
 
@@ -249,7 +257,8 @@ Provider-owned tools such as remote Python sandboxes are separate tools. See
 ## Terms
 
 - **Code mode**: the OpenClaw runtime mode that hides catalog-compatible model
-  tools and exposes `exec`, `wait`, plus required direct-only tools.
+  tools and exposes `exec`, `wait`, required direct-only tools, and the
+  catalog-preferred lean native file surface when applicable.
 - **Guest runtime**: the QuickJS-WASI JavaScript VM that evaluates model code.
 - **Host bridge**: the narrow JSON-compatible callback surface from guest code
   back into OpenClaw.

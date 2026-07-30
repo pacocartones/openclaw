@@ -77,6 +77,7 @@ export function prepareEmbeddedAttemptToolBase(params: {
   });
   const {
     codeModeControlsEnabled: codeModeControlsEnabledForRun,
+    codeModeNativeFileToolsEnabled,
     toolSearchConfig,
     toolSearchControlsEnabled: toolSearchControlsEnabledForRun,
     toolSearchRuntimeConfig,
@@ -348,6 +349,7 @@ export function prepareEmbeddedAttemptToolBase(params: {
 
   return {
     codeModeControlsEnabledForRun,
+    codeModeNativeFileToolsEnabled,
     codeModeSkills,
     computerContextEpoch,
     cronCreatorToolAllowlist,

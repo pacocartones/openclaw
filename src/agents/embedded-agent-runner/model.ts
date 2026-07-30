@@ -18,10 +18,10 @@ import {
   type AuthStorage,
   type ModelRegistry,
 } from "../sessions/index.js";
-import { mergeModelMediaInput } from "./model.compat.js";
 import { resolveConfiguredFallbackModel } from "./model.configured-fallback.js";
 import {
   applyConfiguredProviderOverrides,
+  mergeStaticCatalogInlineModel,
   resolveConfiguredProviderConfig,
 } from "./model.configured-overrides.js";
 import {
@@ -432,12 +432,13 @@ export async function resolveModelAsync(
     });
   }
   if (model && options?.allowBundledStaticCatalogFallback) {
-    const staticMediaInput = (await resolveStaticCatalogModel())?.mediaInput;
-    const resolvedMediaInput = (model as ProviderRuntimeModel).mediaInput;
-    const mediaInput = mergeModelMediaInput(staticMediaInput, resolvedMediaInput);
-    if (mediaInput) {
-      model = { ...(model as ProviderRuntimeModel), mediaInput } as typeof model;
-    }
+    // Dynamic provider discovery owns live transport/runtime facts, while the
+    // matching bundled catalog owns stable capability metadata such as Code
+    // Mode preference and unsupported request parameters.
+    model = mergeStaticCatalogInlineModel(
+      await resolveStaticCatalogModel(),
+      model as ProviderRuntimeModel,
+    ) as typeof model;
   }
   if (model) {
     return { model, authStorage, modelRegistry };

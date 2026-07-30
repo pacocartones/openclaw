@@ -40,6 +40,7 @@ function failedResult(params?: {
   failurePhase?: "input" | "guest" | "bridge" | "host";
   bridgeDispatchStarted?: boolean;
   sideEffectFree?: boolean;
+  readOnly?: boolean;
   output?: unknown[];
   callSequence?: string[];
 }): AgentToolResult<unknown> {
@@ -50,6 +51,7 @@ function failedResult(params?: {
     failurePhase: params?.failurePhase ?? "guest",
     bridgeDispatchStarted: params?.bridgeDispatchStarted ?? false,
     ...(params?.sideEffectFree !== undefined ? { sideEffectFree: params.sideEffectFree } : {}),
+    ...(params?.readOnly !== undefined ? { readOnly: params.readOnly } : {}),
     ...(params?.output ? { output: params.output } : {}),
     ...(params?.callSequence ? { telemetry: { callSequence: params.callSequence } } : {}),
   };
@@ -144,7 +146,7 @@ describe("installCodeModeRepairHook", () => {
           allowed: true,
           remainingAttempts: 1,
           reason: expect.stringMatching(
-            /Do not use import, require, fs, or absolute paths.*Follow every original step in order.*source\.field\("key"\).*tools\.write.*tools\.read/,
+            /Do not use import, require, fs, or absolute paths.*Follow every original step in order.*source\.field\("requested_key"\).*never the literal key name.*multiple files.*code ending at the mutation is invalid.*tools\.read/,
           ),
         },
       },
@@ -281,7 +283,35 @@ describe("installCodeModeRepairHook", () => {
         repair: {
           allowed: true,
           reason: expect.stringMatching(
-            /Complete every remaining original step in order.*r\.field\("key"\).*r\.content.*Do not call `\.field\(\)` on `r\.content`.*do not use JSON\.parse/,
+            /Complete every remaining original step in order.*r\.field\("requested_key"\).*r\.content.*extracted value.*never the literal key name.*Do not call `\.field\(\)` on `r\.content`.*do not use JSON\.parse/,
+          ),
+        },
+      },
+    });
+  });
+
+  it("does not ask a host-enforced read-only recovery to repeat mutations", async () => {
+    const agent = createAgent();
+
+    const result = await agent.afterToolOutcome?.(
+      outcome({
+        result: failedResult({
+          failurePhase: "bridge",
+          bridgeDispatchStarted: true,
+          sideEffectFree: true,
+          readOnly: true,
+          callSequence: ["read"],
+        }),
+      }),
+    );
+
+    expect(result).toMatchObject({
+      terminate: false,
+      details: {
+        repair: {
+          allowed: true,
+          reason: expect.stringMatching(
+            /host-enforced read-only.*Do not call write, edit, apply_patch.*do not repeat the mutation.*inspect and verify.*exact requested answer/,
           ),
         },
       },
@@ -307,7 +337,7 @@ describe("installCodeModeRepairHook", () => {
         repair: {
           allowed: true,
           reason: expect.stringMatching(
-            /Complete every remaining original step in order.*workspace-relative paths.*r\.field\("key"\)/,
+            /Complete every remaining original step in order.*workspace-relative path exactly.*r\.field\("requested_key"\)/,
           ),
         },
       },

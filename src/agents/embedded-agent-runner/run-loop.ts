@@ -517,6 +517,7 @@ export async function runPreparedEmbeddedLoop(
           executionContract,
           hasTerminalToolPresentation: Boolean(terminalToolPresentation),
           noteLaneTaskProgress: input.laneController.noteLaneTaskProgress,
+          retryState: terminalRetryState,
         },
       });
       const {

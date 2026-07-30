@@ -29,6 +29,7 @@ export type UsageAccumulator = {
     describe: number;
     call: number;
     sequence?: string[];
+    failures?: number;
   };
   /** Cumulative outer tool calls across continuation and fallback attempts. */
   toolSummary?: ToolSummaryTrace;
@@ -89,7 +90,13 @@ export const mergeAttemptRunStatsIntoAccumulator = (
   target: UsageAccumulator,
   attempt: {
     assistantTurns?: number;
-    bridgeCalls?: { search: number; describe: number; call: number; sequence?: string[] };
+    bridgeCalls?: {
+      search: number;
+      describe: number;
+      call: number;
+      sequence?: string[];
+      failures?: number;
+    };
     codeModeEngaged?: boolean;
     toolMetas?: Array<{ toolName: string; isError?: boolean }>;
     lastToolError?: unknown;
@@ -104,12 +111,16 @@ export const mergeAttemptRunStatsIntoAccumulator = (
   if (toolMetas.length > 0 || fallbackHadFailure) {
     const previous = target.toolSummary;
     const tools = previous ? [...previous.tools] : [];
+    const sequence = previous?.sequence ? [...previous.sequence] : [];
     const seen = new Set(tools);
     for (const entry of toolMetas) {
       const toolName = normalizeOptionalString(entry.toolName);
-      if (toolName && !seen.has(toolName)) {
-        seen.add(toolName);
-        tools.push(toolName);
+      if (toolName) {
+        sequence.push(toolName);
+        if (!seen.has(toolName)) {
+          seen.add(toolName);
+          tools.push(toolName);
+        }
       }
     }
     const fallbackToolName = normalizeOptionalString(
@@ -118,11 +129,15 @@ export const mergeAttemptRunStatsIntoAccumulator = (
     if (fallbackToolName && !seen.has(fallbackToolName)) {
       tools.push(fallbackToolName);
     }
+    if (fallbackToolName && toolMetas.length === 0) {
+      sequence.push(fallbackToolName);
+    }
     const failedCalls = toolMetas.filter((entry) => entry.isError === true).length;
     const metadataMissingForFailure = fallbackHadFailure && toolMetas.length === 0;
     target.toolSummary = {
       calls: (previous?.calls ?? 0) + toolMetas.length + Number(metadataMissingForFailure),
       tools,
+      sequence,
       failures: (previous?.failures ?? 0) + (failedCalls || Number(fallbackHadFailure)),
     };
   }
@@ -133,6 +148,7 @@ export const mergeAttemptRunStatsIntoAccumulator = (
   bridgeCalls.search += attempt.bridgeCalls.search;
   bridgeCalls.describe += attempt.bridgeCalls.describe;
   bridgeCalls.call += attempt.bridgeCalls.call;
+  bridgeCalls.failures = (bridgeCalls.failures ?? 0) + (attempt.bridgeCalls.failures ?? 0);
   if (attempt.bridgeCalls.sequence) {
     bridgeCalls.sequence = [...(bridgeCalls.sequence ?? []), ...attempt.bridgeCalls.sequence];
   }

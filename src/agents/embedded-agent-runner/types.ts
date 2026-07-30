@@ -101,6 +101,7 @@ export type EmbeddedAgentMeta = {
     describe: number;
     call: number;
     sequence?: string[];
+    failures?: number;
   };
   /** Estimated USD cost of the run's accumulated usage. Omitted when the model has no cost data. */
   costUsd?: number;
@@ -151,6 +152,7 @@ type PromptSegmentTrace = {
 export type ToolSummaryTrace = {
   calls: number;
   tools: string[];
+  sequence?: string[];
   failures?: number;
   totalToolTimeMs?: number;
 };

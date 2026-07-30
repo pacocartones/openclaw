@@ -215,6 +215,14 @@ export function isCodeModeEngagedForModel(
   if (config.enabled !== "auto") {
     return config.enabled;
   }
+  return prefersNativeCodeModeFileTools(model);
+}
+
+/** Restricts the lean native file surface to catalog-verified Code Mode models. */
+export function prefersNativeCodeModeFileTools(model: { compat?: unknown } | undefined): boolean {
+  if (model && !supportsModelTools(model)) {
+    return false;
+  }
   const compat =
     model?.compat && typeof model.compat === "object"
       ? (model.compat as { codeMode?: unknown })

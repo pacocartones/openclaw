@@ -88,6 +88,7 @@ export type ToolSearchToolContext = {
   sessionKey?: string;
   sessionId?: string;
   runId?: string;
+  cwd?: string;
   catalogRef?: ToolSearchCatalogRef;
   abortSignal?: AbortSignal;
   executeTool?: ToolSearchCatalogToolExecutor;
@@ -116,6 +117,8 @@ export type ToolSearchCatalogSession = {
   describeCount: number;
   callCount: number;
   callSequence?: string[];
+  callFailureCount?: number;
+  callSideEffectFreeSequence?: boolean[];
 };
 
 export type ToolSearchCatalogRef = {

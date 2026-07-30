@@ -29,6 +29,13 @@ const LOCAL_MODEL_LEAN_TOOL_SEARCH_DEFAULTS = {
   maxSearchLimit: 10,
 } as const;
 
+export const LOCAL_MODEL_LEAN_CODE_MODE_DIRECT_TOOL_NAMES = [
+  "read",
+  "edit",
+  "write",
+  "apply_patch",
+] as const;
+
 function resolvePreservedLocalModelLeanToolNames(names?: Iterable<string>) {
   if (!names) {
     return [];

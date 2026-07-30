@@ -9,17 +9,29 @@ import {
   CODE_MODE_EXEC_TOOL_NAME,
   CODE_MODE_WAIT_TOOL_NAME,
 } from "../../code-mode-control-tools.js";
+import { repairCodeModeToolInput } from "../../code-mode-tool-input-repair.js";
 import type { StreamFn } from "../../runtime/index.js";
 import { isRunnerToolCallBlockType } from "./attempt.tool-call-block-type.js";
 import { wrapStreamObjectEvents } from "./stream-wrapper.js";
 
 const MAX_TRANSLATED_ARGUMENT_CHARS = 64_000;
 const GUEST_TOOL_PREFIX_PATTERN = /^tools[./]([A-Za-z_$][A-Za-z0-9_$]*)$/u;
+function translatedGuestCallGuidance(name: string): string {
+  const base = `Recovered only the ${name} guest tool call. Re-read the original request and complete every remaining step before answering; do not repeat this completed call.`;
+  if (name === "read") {
+    return `${base} If the user requested a named key's value, use the value associated with that exact key, never the key name itself.`;
+  }
+  if (name === "write" || name === "edit" || name === "apply_patch") {
+    return `${base} A mutation is not verification: when read-back or verification was requested, do not answer until it succeeds and matches the requested state.`;
+  }
+  return base;
+}
 
 type AssistantStream = Awaited<ReturnType<StreamFn>>;
 type GuestToolInvocation = {
   arguments: unknown;
   name: string;
+  nativeEligible: boolean;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -51,6 +63,18 @@ function serializeGuestToolArguments(value: unknown): string | undefined {
   }
 }
 
+function repairStringifiedStructuredArguments(
+  name: string,
+  rawArguments: unknown,
+  guestToolSchemas: ReadonlyMap<string, unknown>,
+): unknown {
+  const parameters = guestToolSchemas.get(name);
+  if (!isRecord(rawArguments) || !parameters) {
+    return rawArguments;
+  }
+  return repairCodeModeToolInput(parameters, rawArguments);
+}
+
 function resolveUniqueGuestToolByArguments(
   rawArguments: Record<string, unknown>,
   guestToolSchemas: ReadonlyMap<string, unknown>,
@@ -71,16 +95,20 @@ function resolveUniqueGuestToolByArguments(
       continue;
     }
     try {
+      const repairedArguments = repairCodeModeToolInput(parameters, rawArguments);
+      if (!isRecord(repairedArguments)) {
+        continue;
+      }
       const validated = validateToolArguments({ name, description: "", parameters } as Tool, {
         type: "toolCall",
         id: "code-mode-outer-call-repair",
         name,
-        arguments: rawArguments,
+        arguments: repairedArguments,
       } satisfies ToolCall);
       if (matched) {
         return undefined;
       }
-      matched = { name, arguments: validated };
+      matched = { name, arguments: validated, nativeEligible: true };
     } catch {
       // Non-matching schemas are expected; only one exact match is repairable.
     }
@@ -96,7 +124,15 @@ function resolveGuestToolInvocation(
 ): GuestToolInvocation | undefined {
   const guestToolName = resolveGuestToolName(rawName, guestToolNames);
   if (guestToolName) {
-    return { name: guestToolName, arguments: rawArguments };
+    return {
+      name: guestToolName,
+      nativeEligible: rawName.trim() === guestToolName,
+      arguments: repairStringifiedStructuredArguments(
+        guestToolName,
+        rawArguments,
+        guestToolSchemas,
+      ),
+    };
   }
   if (
     rawName.trim() !== CODE_MODE_EXEC_TOOL_NAME ||
@@ -115,6 +151,7 @@ function translateCodeModeGuestToolCall(
   block: unknown,
   guestToolNames: ReadonlySet<string>,
   guestToolSchemas: ReadonlyMap<string, unknown>,
+  nativeToolNames: ReadonlySet<string>,
 ): void {
   if (!block || typeof block !== "object") {
     return;
@@ -138,12 +175,27 @@ function translateCodeModeGuestToolCall(
   if (!invocation) {
     return;
   }
+  if (
+    invocation.nativeEligible &&
+    nativeToolNames.has(invocation.name) &&
+    isRecord(invocation.arguments)
+  ) {
+    toolCall.name = invocation.name;
+    toolCall.arguments = invocation.arguments;
+    if ("input" in toolCall) {
+      toolCall.input = invocation.arguments;
+    }
+    if (typeof (toolCall as { partialArgs?: unknown }).partialArgs === "string") {
+      (toolCall as { partialArgs: string }).partialArgs = JSON.stringify(invocation.arguments);
+    }
+    return;
+  }
   const serializedArguments = serializeGuestToolArguments(invocation.arguments);
   if (!serializedArguments) {
     return;
   }
   const translatedArguments = {
-    code: `return await tools[${JSON.stringify(invocation.name)}](JSON.parse(${JSON.stringify(serializedArguments)}));`,
+    code: `const __openclawResult = await tools[${JSON.stringify(invocation.name)}](JSON.parse(${JSON.stringify(serializedArguments)})); console.log(${JSON.stringify(translatedGuestCallGuidance(invocation.name))}); return __openclawResult;`,
   };
   toolCall.name = "exec";
   toolCall.arguments = translatedArguments;
@@ -159,9 +211,10 @@ function translateCodeModeGuestToolCalls(
   message: unknown,
   guestToolNames: ReadonlySet<string>,
   guestToolSchemas: ReadonlyMap<string, unknown>,
+  nativeToolNames: ReadonlySet<string>,
 ): void {
   visitObjectContentBlocks(message, (block) => {
-    translateCodeModeGuestToolCall(block, guestToolNames, guestToolSchemas);
+    translateCodeModeGuestToolCall(block, guestToolNames, guestToolSchemas, nativeToolNames);
   });
 }
 
@@ -169,27 +222,53 @@ function wrapStreamTranslateCodeModeGuestToolCalls(
   stream: AssistantStream,
   guestToolNames: ReadonlySet<string>,
   guestToolSchemas: ReadonlyMap<string, unknown>,
+  nativeToolNames: ReadonlySet<string>,
 ): AssistantStream {
   const originalResult = stream.result.bind(stream);
   stream.result = async () => {
     const message = await originalResult();
-    translateCodeModeGuestToolCalls(message, guestToolNames, guestToolSchemas);
+    translateCodeModeGuestToolCalls(message, guestToolNames, guestToolSchemas, nativeToolNames);
     return message;
   };
   wrapStreamObjectEvents(stream, (event) => {
     if (event.type === "done") {
-      translateCodeModeGuestToolCalls(event.partial, guestToolNames, guestToolSchemas);
-      translateCodeModeGuestToolCalls(event.message, guestToolNames, guestToolSchemas);
+      translateCodeModeGuestToolCalls(
+        event.partial,
+        guestToolNames,
+        guestToolSchemas,
+        nativeToolNames,
+      );
+      translateCodeModeGuestToolCalls(
+        event.message,
+        guestToolNames,
+        guestToolSchemas,
+        nativeToolNames,
+      );
       return;
     }
     if (event.type !== "toolcall_end") {
       return;
     }
-    translateCodeModeGuestToolCall(event.toolCall, guestToolNames, guestToolSchemas);
+    translateCodeModeGuestToolCall(
+      event.toolCall,
+      guestToolNames,
+      guestToolSchemas,
+      nativeToolNames,
+    );
     // Transports project the canonical assistant blocks through different event
     // fields. Keep every populated view aligned before dispatch or persistence.
-    translateCodeModeGuestToolCalls(event.partial, guestToolNames, guestToolSchemas);
-    translateCodeModeGuestToolCalls(event.message, guestToolNames, guestToolSchemas);
+    translateCodeModeGuestToolCalls(
+      event.partial,
+      guestToolNames,
+      guestToolSchemas,
+      nativeToolNames,
+    );
+    translateCodeModeGuestToolCalls(
+      event.message,
+      guestToolNames,
+      guestToolSchemas,
+      nativeToolNames,
+    );
   });
   return stream;
 }
@@ -198,18 +277,25 @@ export function wrapStreamFnTranslateCodeModeGuestToolCalls(
   baseFn: StreamFn,
   guestToolNames?: ReadonlySet<string>,
   guestToolSchemas?: ReadonlyMap<string, unknown>,
+  nativeToolNames?: ReadonlySet<string>,
 ): StreamFn {
   if (!guestToolNames || guestToolNames.size === 0) {
     return baseFn;
   }
   const schemas = guestToolSchemas ?? new Map();
+  const nativeNames = nativeToolNames ?? new Set<string>();
   return (model, context, streamOptions) => {
     const maybeStream = baseFn(model, context, streamOptions);
     if (maybeStream && typeof maybeStream === "object" && "then" in maybeStream) {
       return Promise.resolve(maybeStream).then((stream) =>
-        wrapStreamTranslateCodeModeGuestToolCalls(stream, guestToolNames, schemas),
+        wrapStreamTranslateCodeModeGuestToolCalls(stream, guestToolNames, schemas, nativeNames),
       );
     }
-    return wrapStreamTranslateCodeModeGuestToolCalls(maybeStream, guestToolNames, schemas);
+    return wrapStreamTranslateCodeModeGuestToolCalls(
+      maybeStream,
+      guestToolNames,
+      schemas,
+      nativeNames,
+    );
   };
 }

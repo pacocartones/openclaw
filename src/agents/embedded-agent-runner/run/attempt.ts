@@ -461,6 +461,7 @@ export async function runEmbeddedAttempt(
                 describe: catalogSession.describeCount,
                 call: catalogSession.callCount,
                 sequence: [...(catalogSession.callSequence ?? [])],
+                failures: catalogSession.callFailureCount ?? 0,
               },
             }
           : {}),

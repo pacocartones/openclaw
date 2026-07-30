@@ -28,6 +28,7 @@ import type { AgentRuntimePlan } from "../../runtime-plan/types.js";
 import type { AgentMessage } from "../../runtime/index.js";
 import type { AuthStorage, ModelRegistry } from "../../sessions/index.js";
 import type { ToolErrorSummary } from "../../tool-error-summary.js";
+import type { FileTarget } from "../../tool-mutation.js";
 import type { NormalizedUsage } from "../../usage.js";
 import type { EmbeddedRunReplayMetadata, EmbeddedRunReplayState } from "../replay-state.js";
 import type { EmbeddedRunLivenessState } from "../types.js";
@@ -261,7 +262,17 @@ export type EmbeddedRunAttemptResult = {
     toolName: string;
     meta?: string;
     replaySafe?: boolean;
+    mutatingAction?: boolean;
+    fileTarget?: FileTarget;
+    fileTargets?: FileTarget[];
+    fileMutationExecutionStarted?: true;
+    fileTargetVerified?: true;
+    fileTargetAbsent?: true;
     sideEffectFree?: boolean;
+    codeModeLastCallSideEffectFree?: boolean;
+    codeModeSuccessfulObservationFileTargets?: FileTarget[];
+    codeModeSuccessfulAbsenceObservationFileTargets?: FileTarget[];
+    codeModeUnverifiedMutationFileTargets?: FileTarget[];
     codeModeRepairAllowed?: boolean;
     isError?: boolean;
     asyncStarted?: boolean;
@@ -322,6 +333,7 @@ export type EmbeddedRunAttemptResult = {
     describe: number;
     call: number;
     sequence?: string[];
+    failures?: number;
   };
   replayMetadata: EmbeddedRunReplayMetadata;
   /**
