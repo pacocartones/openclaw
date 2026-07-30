@@ -75,6 +75,11 @@ type BeforeToolCallWrapperOptions = {
 type ForwardedToolExecution = (...args: unknown[]) => ReturnType<AnyAgentTool["execute"]>;
 const MAX_TRACKED_ADJUSTED_PARAMS = 1024;
 
+function buildToolPreparationHookContext(ctx: HookContext): Omit<HookContext, "attribution"> {
+  const { attribution: _hostAttribution, ...toolHookContext } = ctx;
+  return toolHookContext;
+}
+
 /** Run tool-owned preparation while retaining the exact prepared object. */
 export async function prepareBeforeToolCallExecutionParams(params: {
   tool: AnyAgentTool;
@@ -87,7 +92,7 @@ export async function prepareBeforeToolCallExecutionParams(params: {
   return prepare
     ? await prepare(params.params, {
         ...(params.toolCallId ? { toolCallId: params.toolCallId } : {}),
-        ...(params.ctx ? { hookContext: params.ctx } : {}),
+        ...(params.ctx ? { hookContext: buildToolPreparationHookContext(params.ctx) } : {}),
         ...(params.signal ? { signal: params.signal } : {}),
       })
     : params.params;
