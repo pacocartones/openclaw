@@ -232,6 +232,8 @@ export const NodeInvokeRequestEventSchema = closedObject({
   paramsJSON: Type.Optional(Type.String()),
   timeoutMs: Type.Optional(Type.Integer({ minimum: 0 })),
   idempotencyKey: Type.Optional(NonEmptyString),
+  // Gateway-owned agent correlation forwarded beside command params.
+  sessionKey: Type.Optional(NonEmptyString),
 });
 
 /** Ordered input frame sent by the gateway to one long-lived node invoke. */

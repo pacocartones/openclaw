@@ -238,13 +238,23 @@ describe("runNodeHost", () => {
     },
   );
 
-  it("routes invoke input, cancellation, and connection close to the runtime", async () => {
+  it("routes invoke requests, input, cancellation, and connection close to the runtime", async () => {
     mocks.useFakeRuntime = true;
     await expect(runNodeHost({ gatewayHost: "127.0.0.1", gatewayPort: 18789 })).rejects.toThrow(
       "event loop readiness timeout",
     );
     const options = lastCapturedOptions();
 
+    options?.onEvent?.({
+      type: "event",
+      event: "node.invoke.request",
+      payload: {
+        id: "invoke-1",
+        nodeId: "node-1",
+        command: "system.run",
+        sessionKey: "agent:main:main",
+      },
+    });
     options?.onEvent?.({
       type: "event",
       event: "node.invoke.input",
@@ -257,6 +267,15 @@ describe("runNodeHost", () => {
     });
     options?.onClose?.(1000, "connection closed");
 
+    expect(mocks.activeRuntime.invoke).toHaveBeenCalledWith({
+      id: "invoke-1",
+      nodeId: "node-1",
+      command: "system.run",
+      paramsJSON: null,
+      timeoutMs: null,
+      idempotencyKey: null,
+      sessionKey: "agent:main:main",
+    });
     expect(mocks.activeRuntime.handleInput).toHaveBeenCalledWith("invoke-1", 3, '{"kind":"data"}');
     expect(mocks.activeRuntime.cancel).toHaveBeenCalledWith("invoke-1");
     expect(mocks.activeRuntime.cancelAll).toHaveBeenCalledOnce();
