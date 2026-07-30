@@ -320,7 +320,10 @@ export type EmbeddedAgentParams = {
   prompt?: string;
   transcriptPrompt?: string;
   lifecycleGeneration?: string;
-  onExecutionStarted?: (info?: { lifecycleGeneration?: string }) => void;
+  onExecutionStarted?: (info?: {
+    lifecycleGeneration?: string;
+    attribution?: import("../../agents/agent-execution-attribution.js").AgentExecutionAttribution;
+  }) => void;
   onExecutionPhase?: (info: {
     phase:
       | "runner_entered"

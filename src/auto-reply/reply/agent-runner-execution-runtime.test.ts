@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { testing as cliBackendsTesting } from "../../agents/cli-backends.test-support.js";
 import type { SessionEntry } from "../../config/sessions.js";
+import { rotateAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import type { TemplateContext } from "../templating.js";
 import {
   setupAgentRunnerExecutionTestState,
@@ -17,6 +18,36 @@ import type { FallbackRunnerParams } from "./agent-runner-execution.test-support
 const state = setupAgentRunnerExecutionTestState();
 
 describe("executeAgentTurn: runtime selection", () => {
+  it("preserves one admission attribution across model fallback candidates", async () => {
+    state.runWithModelFallbackMock.mockImplementationOnce(async (params: FallbackRunnerParams) => {
+      await params.run("openai", "gpt-5.4");
+      const result = await params.run("anthropic", "claude-opus-4-7");
+      return {
+        result,
+        provider: "anthropic",
+        model: "claude-opus-4-7",
+        attempts: [],
+      };
+    });
+    state.runEmbeddedAgentMock
+      .mockResolvedValueOnce({ payloads: [{ text: "retry" }], meta: {} })
+      .mockResolvedValueOnce({ payloads: [{ text: "final" }], meta: {} });
+
+    const executeAgentTurn = await getExecuteAgentTurnForTest();
+    await executeAgentTurn(
+      createMinimalRunAgentTurnParams({ opts: { runId: "fallback-attribution" } }),
+    );
+
+    const firstAttribution = state.runEmbeddedAgentMock.mock.calls[0]?.[0]?.attribution;
+    expect(firstAttribution).toMatchObject({
+      runId: "fallback-attribution",
+      sessionKey: "main",
+      sessionId: "session",
+    });
+    expect(Object.isFrozen(firstAttribution)).toBe(true);
+    expect(state.runEmbeddedAgentMock.mock.calls[1]?.[0]?.attribution).toBe(firstAttribution);
+  });
+
   it("resolves CLI messageProvider from the live session surface when no origin channel is set", async () => {
     state.isCliProviderMock.mockReturnValue(true);
     state.runWithModelFallbackMock.mockImplementationOnce(async (params: FallbackRunnerParams) => ({
@@ -62,6 +93,38 @@ describe("executeAgentTurn: runtime selection", () => {
     expectMockCallArgFields(state.runCliAgentMock, 0, "CLI run params", {
       messageChannel: undefined,
       messageProvider: "discord",
+    });
+  });
+
+  it("rebases direct CLI attribution after lifecycle rotation during preflight", async () => {
+    state.isCliProviderMock.mockReturnValue(true);
+    let rotatedGeneration = "";
+    state.runWithModelFallbackMock.mockImplementationOnce(async (params: FallbackRunnerParams) => {
+      rotatedGeneration = rotateAgentEventLifecycleGeneration();
+      return {
+        result: await params.run("codex-cli", "gpt-5.4"),
+        provider: "codex-cli",
+        model: "gpt-5.4",
+        attempts: [],
+      };
+    });
+    state.runCliAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "final" }],
+      meta: {},
+    });
+
+    const executeAgentTurn = await getExecuteAgentTurnForTest();
+    const followupRun = createFollowupRun();
+    followupRun.run.provider = "codex-cli";
+    followupRun.run.model = "gpt-5.4";
+
+    await executeAgentTurn(createMinimalRunAgentTurnParams({ followupRun }));
+
+    expectMockCallArgFields(state.runCliAgentMock, 0, "CLI run params", {
+      lifecycleGeneration: rotatedGeneration,
+      attribution: expect.objectContaining({
+        lifecycleGeneration: rotatedGeneration,
+      }),
     });
   });
 

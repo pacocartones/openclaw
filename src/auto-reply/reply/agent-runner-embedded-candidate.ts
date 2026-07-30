@@ -1,6 +1,7 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { resolveBootstrapWarningSignaturesSeen } from "../../agents/bootstrap-budget.js";
 import type { BootstrapContextRunKind } from "../../agents/bootstrap-mode.js";
+import type { AgentExecutionStartedInfo } from "../../agents/embedded-agent-runner/run/internal-params.js";
 import type { RunEmbeddedAgentParams } from "../../agents/embedded-agent-runner/run/params.js";
 import { runEmbeddedAgent } from "../../agents/embedded-agent.js";
 import type { FastModeAutoProgressState } from "../../agents/fast-mode.js";
@@ -193,6 +194,7 @@ export async function runEmbeddedFallbackCandidate(params: {
       runEmbeddedAgent({
         ...embeddedContext,
         messageActionTurnCapability,
+        attribution: turn.attribution,
         lifecycleGeneration: params.getLifecycleGeneration(),
         allowGatewaySubagentBinding: true,
         trigger: turn.isHeartbeat ? "heartbeat" : "user",
@@ -244,7 +246,10 @@ export async function runEmbeddedFallbackCandidate(params: {
         abortSignal: params.runAbortSignal,
         replyOperation: turn.replyOperation,
         deferTerminalLifecycle: true,
-        onExecutionStarted: (info) => {
+        onExecutionStarted: (info: AgentExecutionStartedInfo | undefined) => {
+          if (info?.attribution) {
+            turn.attribution = info.attribution;
+          }
           if (info?.lifecycleGeneration) {
             params.onLifecycleGeneration(info.lifecycleGeneration);
           }
