@@ -13,6 +13,7 @@ import type {
   PluginHookToolRequesterContext,
 } from "../plugins/types.js";
 import type { SkillSnapshot, SkillTelemetrySource, SkillUsagePath } from "../skills/types.js";
+import type { AgentExecutionAttribution } from "./agent-execution-attribution.js";
 import type { AgentTool } from "./runtime/index.js";
 import type { SandboxFsBridge } from "./sandbox/fs-bridge.js";
 
@@ -30,6 +31,11 @@ export type ToolOutcomeObservation = {
 export type ToolOutcomeObserver = (observation: ToolOutcomeObservation) => void;
 
 export type HookContext = {
+  /**
+   * Host-owned execution correlation. Policy and diagnostics project the
+   * existing flat fields from this snapshot without exposing it to plugins.
+   */
+  readonly attribution?: AgentExecutionAttribution;
   agentId?: string;
   config?: OpenClawConfig;
   /** Tool execution cwd for host-derived path facts. */

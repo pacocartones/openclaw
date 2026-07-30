@@ -36,6 +36,7 @@ import {
 } from "../skills/loading/source.js";
 import type { SkillSnapshot, SkillTelemetrySource, SkillUsagePath } from "../skills/types.js";
 import { isPlainObject, truncateUtf16Safe } from "../utils.js";
+import { resolveToolExecutionCorrelation } from "./agent-tools.before-tool-call.attribution.js";
 import { buildAdjustedParamsKey } from "./agent-tools.before-tool-call.state.js";
 import type {
   HookBlockedReason,
@@ -108,8 +109,9 @@ export function rememberPendingTerminalPresentation(params: {
   if (!params.toolCallId || !params.ctx?.onToolOutcome) {
     return;
   }
+  const correlation = resolveToolExecutionCorrelation(params.ctx);
   const key = buildAdjustedParamsKey({
-    runId: params.ctx.runId,
+    runId: correlation.runId,
     toolCallId: params.toolCallId,
   });
   pendingTerminalPresentationByToolCall.set(key, {
@@ -436,6 +438,7 @@ export function emitSkillUsedDiagnostic(params: {
   toolName: string;
   toolCallId?: string;
 }): void {
+  const correlation = resolveToolExecutionCorrelation(params.ctx);
   const trace = params.ctx?.trace
     ? freezeDiagnosticTraceContext(createChildDiagnosticTraceContext(params.ctx.trace))
     : undefined;
@@ -444,10 +447,10 @@ export function emitSkillUsedDiagnostic(params: {
   emitTrustedSkillUsedDiagnosticEvent(
     {
       type: "skill.used",
-      ...(params.ctx?.runId && { runId: params.ctx.runId }),
-      ...(params.ctx?.sessionKey && { sessionKey: params.ctx.sessionKey }),
-      ...(params.ctx?.sessionId && { sessionId: params.ctx.sessionId }),
-      ...(params.ctx?.agentId && { agentId: params.ctx.agentId }),
+      ...(correlation.runId && { runId: correlation.runId }),
+      ...(correlation.sessionKey && { sessionKey: correlation.sessionKey }),
+      ...(correlation.sessionId && { sessionId: correlation.sessionId }),
+      ...(correlation.agentId && { agentId: correlation.agentId }),
       ...(trace && { trace }),
       skillName: params.match.skillName,
       skillSource: params.match.skillSource,
@@ -597,7 +600,11 @@ export async function reconcileLoopCallExecutionParams(args: {
   toolParams: unknown;
   toolCallId?: string;
 }): Promise<void> {
-  if ((!args.ctx?.sessionKey && !args.ctx?.sessionId) || args.ctx.loopDetection?.enabled !== true) {
+  const correlation = resolveToolExecutionCorrelation(args.ctx);
+  if (
+    (!correlation.sessionKey && !correlation.sessionId) ||
+    args.ctx?.loopDetection?.enabled !== true
+  ) {
     return;
   }
   try {
@@ -608,20 +615,20 @@ export async function reconcileLoopCallExecutionParams(args: {
       resolveToolLoopWarningThreshold,
     } = await loadBeforeToolCallRuntime();
     const sessionState = getDiagnosticSessionState({
-      sessionKey: args.ctx.sessionKey,
-      sessionId: args.ctx.sessionId,
+      sessionKey: correlation.sessionKey,
+      sessionId: correlation.sessionId,
     });
     const churn = reconcileToolCallExecutionParams(sessionState, {
       toolName: args.toolName,
       toolParams: args.toolParams,
       toolCallId: args.toolCallId,
-      runId: args.ctx.runId,
+      runId: correlation.runId,
       warningThreshold: resolveToolLoopWarningThreshold(),
     });
     markDiagnosticArgumentChurnObservation({
-      sessionKey: args.ctx.sessionKey,
-      sessionId: args.ctx.sessionId,
-      runId: args.ctx.runId,
+      sessionKey: correlation.sessionKey,
+      sessionId: correlation.sessionId,
+      runId: correlation.runId,
       active: churn.active,
     });
   } catch (err) {
@@ -642,7 +649,8 @@ export async function recordLoopOutcome(args: {
   toolCallOrdinal?: number;
   terminalPresentation?: string;
 }): Promise<void> {
-  if (!args.ctx?.sessionKey && !args.ctx?.sessionId) {
+  const correlation = resolveToolExecutionCorrelation(args.ctx);
+  if (!correlation.sessionKey && !correlation.sessionId) {
     return;
   }
   let recordedOutcome: ToolOutcomeObservation | undefined;
@@ -654,8 +662,8 @@ export async function recordLoopOutcome(args: {
       recordToolCallOutcome,
     } = await loadBeforeToolCallRuntime();
     const sessionState = getDiagnosticSessionState({
-      sessionKey: args.ctx.sessionKey,
-      sessionId: args.ctx.sessionId,
+      sessionKey: correlation.sessionKey,
+      sessionId: correlation.sessionId,
     });
     const record = recordToolCallOutcome(sessionState, {
       toolName: args.toolName,
@@ -664,7 +672,7 @@ export async function recordLoopOutcome(args: {
       result: args.result,
       error: args.error,
       config: args.ctx.loopDetection,
-      ...(args.ctx.runId && { runId: args.ctx.runId }),
+      ...(correlation.runId && { runId: correlation.runId }),
     });
     const churnContinues =
       record !== undefined &&
@@ -674,9 +682,9 @@ export async function recordLoopOutcome(args: {
         record.argsHash,
       ).count > 0;
     markDiagnosticArgumentChurnObservation({
-      sessionKey: args.ctx.sessionKey,
-      sessionId: args.ctx.sessionId,
-      runId: args.ctx.runId,
+      sessionKey: correlation.sessionKey,
+      sessionId: correlation.sessionId,
+      runId: correlation.runId,
       active: churnContinues,
       existingOnly: true,
     });

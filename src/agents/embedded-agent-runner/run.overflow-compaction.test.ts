@@ -1150,21 +1150,23 @@ describe("runEmbeddedAgent overflow compaction trigger routing", () => {
     const attempt = expectMockCallFields(mockedRunEmbeddedAttempt, {
       lifecycleGeneration: currentLifecycleGeneration,
     });
-    expect(attempt.attribution).toEqual({
+    expect(attempt).not.toHaveProperty("attribution");
+    const reboundAttribution = onExecutionStarted.mock.calls[0]?.[0]?.attribution;
+    expect(reboundAttribution).toEqual({
       ...attribution,
       lifecycleGeneration: currentLifecycleGeneration,
     });
-    expect(attempt.attribution).not.toBe(attribution);
-    expect(Object.isFrozen(attempt.attribution)).toBe(true);
+    expect(reboundAttribution).not.toBe(attribution);
+    expect(Object.isFrozen(reboundAttribution)).toBe(true);
     expect(getAgentRunContext("queued-across-restart")).toEqual(
       expect.objectContaining({
-        attribution: attempt.attribution,
+        attribution: reboundAttribution,
         lifecycleGeneration: currentLifecycleGeneration,
       }),
     );
     expect(onExecutionStarted).toHaveBeenCalledWith({
       lifecycleGeneration: currentLifecycleGeneration,
-      attribution: attempt.attribution,
+      attribution: reboundAttribution,
     });
   });
 

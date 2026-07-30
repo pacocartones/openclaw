@@ -22,6 +22,7 @@ import {
 import { applyAgentToolSurfaceCatalog } from "../../tool-surface-plan.js";
 import { log } from "../logger.js";
 import type { prepareEmbeddedAttemptBundleTools } from "./attempt-bundle-tools.js";
+import { resolveEmbeddedAttemptExecutionAttribution } from "./attempt-execution-attribution.js";
 import { collectAttemptExplicitToolAllowlistSources } from "./attempt-tool-allowlist.js";
 import type { prepareEmbeddedAttemptToolBase } from "./attempt-tool-base-prepare.js";
 import { buildToolSearchRunPlan } from "./attempt.tool-search-run-plan.js";
@@ -59,7 +60,9 @@ export function prepareEmbeddedAttemptToolCatalog(input: {
   } = preparedToolBase;
   const { clientTools, uncompactedEffectiveTools } = input.bundleTools;
   let effectiveTools = uncompactedEffectiveTools;
+  const attribution = resolveEmbeddedAttemptExecutionAttribution(attempt);
   const catalogToolHookContext = {
+    ...(attribution ? { attribution } : {}),
     agentId: input.sessionAgentId,
     config: attempt.config,
     cwd: input.effectiveCwd,

@@ -40,6 +40,7 @@ import { setActivePluginRegistry } from "../plugins/runtime.js";
 import { setPluginToolMeta } from "../plugins/tools.js";
 import { createCanonicalFixtureSkill } from "../skills/test-support/test-helpers.js";
 import { createChannelTestPluginBase, createTestRegistry } from "../test-utils/channel-plugins.js";
+import { createAgentExecutionAttribution } from "./agent-execution-attribution.js";
 import {
   getBeforeToolCallFailureDisposition,
   getBeforeToolCallPolicyDiagnosticState,
@@ -2137,6 +2138,47 @@ describe("before_tool_call requireApproval handling", () => {
     expect(toolContext.trace).toEqual(trace);
     expect(toolContext.trace).not.toBe(trace);
     expect(Object.isFrozen(toolContext.trace)).toBe(true);
+  });
+
+  it("projects immutable admission attribution without exposing it to plugins", async () => {
+    const attribution = createAgentExecutionAttribution({
+      runId: "run-admitted",
+      lifecycleGeneration: "generation-1",
+      sessionKey: "session-admitted",
+      sessionId: "session-id-admitted",
+      agentId: "agent-admitted",
+    });
+    const contexts: Record<string, unknown>[] = [];
+    hookRunner.runBeforeToolCall.mockImplementation(async (_event, context) => {
+      const mutableContext = context as unknown as Record<string, unknown>;
+      contexts.push({ ...mutableContext });
+      mutableContext.runId = "plugin-forged";
+      return undefined;
+    });
+
+    const ctx = {
+      attribution,
+      runId: "run-flat",
+      sessionKey: "session-flat",
+      sessionId: "session-id-flat",
+      agentId: "agent-flat",
+      requester: { senderId: "sender-1" },
+    };
+    await runBeforeToolCallHook({ toolName: "bash", params: { command: "pwd" }, ctx });
+    await runBeforeToolCallHook({ toolName: "bash", params: { command: "pwd" }, ctx });
+
+    expect(contexts).toHaveLength(2);
+    for (const context of contexts) {
+      expect(context).toMatchObject({
+        runId: "run-admitted",
+        sessionKey: "session-admitted",
+        sessionId: "session-id-admitted",
+        agentId: "agent-admitted",
+        requester: { senderId: "sender-1" },
+      });
+      expect(context).not.toHaveProperty("attribution");
+      expect(context).not.toHaveProperty("lifecycleGeneration");
+    }
   });
 
   it("passes host-derived apply_patch paths to before_tool_call hooks", async () => {

@@ -34,6 +34,7 @@ import {
   resolveBeforeToolCallApprovalOutcome,
   resolveSkillWorkshopApprovalForFinalParams,
 } from "./agent-tools.before-tool-call.approval.js";
+import { resolveToolExecutionCorrelation } from "./agent-tools.before-tool-call.attribution.js";
 import {
   beforeToolCallLog as log,
   loadBeforeToolCallRuntime,
@@ -75,11 +76,12 @@ export function consumeFinalClientVoiceToolConfirmation(args: {
   params: unknown;
   ctx?: HookContext;
 }) {
-  const voiceRun = resolveClientVoiceRunBinding(args.ctx?.runId);
+  const correlation = resolveToolExecutionCorrelation(args.ctx);
+  const voiceRun = resolveClientVoiceRunBinding(correlation.runId);
   return consumeClientVoiceToolConfirmationPolicy({
     agentId: voiceRun?.agentId,
     voiceSessionId: voiceRun?.voiceSessionId,
-    runId: args.ctx?.runId,
+    runId: correlation.runId,
     toolName: normalizeToolName(args.toolName || "tool"),
     toolParams: args.params,
     ...(voiceRun ? { isConfirmable: () => isClientVoiceSessionConfirmable(voiceRun) } : {}),
@@ -98,10 +100,11 @@ export async function runBeforeToolCallHook(args: {
 }): Promise<HookOutcome> {
   const toolName = normalizeToolName(args.toolName || "tool");
   const params = args.params;
+  const correlation = resolveToolExecutionCorrelation(args.ctx);
   let releaseArgumentChurnPolicyWait: (() => void) | undefined;
 
   try {
-    if (args.ctx?.sessionKey) {
+    if (correlation.sessionKey) {
       const {
         markDiagnosticArgumentChurnObservation,
         getDiagnosticSessionState,
@@ -110,11 +113,11 @@ export async function runBeforeToolCallHook(args: {
         recordToolCall,
       } = await loadBeforeToolCallRuntime();
       const sessionState = getDiagnosticSessionState({
-        sessionKey: args.ctx.sessionKey,
-        sessionId: args.ctx.sessionId,
+        sessionKey: correlation.sessionKey,
+        sessionId: correlation.sessionId,
       });
 
-      const loopScope = args.ctx.runId ? { runId: args.ctx.runId } : undefined;
+      const loopScope = correlation.runId ? { runId: correlation.runId } : undefined;
       const loopResult = detectToolCallLoop(
         sessionState,
         toolName,
@@ -128,9 +131,9 @@ export async function runBeforeToolCallHook(args: {
         // must not expose the churn clock while a sibling is still pending.
         const policyWaitToken = Symbol("before-tool-call-policy-wait");
         const policyWaitRef = {
-          sessionKey: args.ctx.sessionKey,
-          sessionId: args.ctx.sessionId,
-          runId: args.ctx.runId,
+          sessionKey: correlation.sessionKey,
+          sessionId: correlation.sessionId,
+          runId: correlation.runId,
           policyWaitToken,
         };
         markDiagnosticArgumentChurnObservation({
@@ -148,8 +151,8 @@ export async function runBeforeToolCallHook(args: {
         if (loopResult.level === "critical") {
           log.error(`Blocking ${toolName} due to critical loop: ${loopResult.message}`);
           logToolLoopAction({
-            sessionKey: args.ctx.sessionKey,
-            sessionId: args.ctx.sessionId,
+            sessionKey: correlation.sessionKey,
+            sessionId: correlation.sessionId,
             toolName,
             level: "critical",
             action: "block",
@@ -167,12 +170,14 @@ export async function runBeforeToolCallHook(args: {
           };
         }
         const baseWarningKey = loopResult.warningKey ?? `${loopResult.detector}:${toolName}`;
-        const warningKey = args.ctx.runId ? `${args.ctx.runId}:${baseWarningKey}` : baseWarningKey;
+        const warningKey = correlation.runId
+          ? `${correlation.runId}:${baseWarningKey}`
+          : baseWarningKey;
         if (shouldEmitLoopWarning(sessionState, warningKey, loopResult.count)) {
           log.warn(`Loop warning for ${toolName}: ${loopResult.message}`);
           logToolLoopAction({
-            sessionKey: args.ctx.sessionKey,
-            sessionId: args.ctx.sessionId,
+            sessionKey: correlation.sessionKey,
+            sessionId: correlation.sessionId,
             toolName,
             level: "warning",
             action: "warn",
@@ -207,11 +212,11 @@ export async function runBeforeToolCallHook(args: {
       ...(args.ctx?.config ? { config: args.ctx.config } : {}),
       ...(args.ctx?.workspaceDir ? { workspaceDir: args.ctx.workspaceDir } : {}),
     });
-    const voiceRun = resolveClientVoiceRunBinding(args.ctx?.runId);
+    const voiceRun = resolveClientVoiceRunBinding(correlation.runId);
     const voiceConfirmation = checkClientVoiceToolConfirmationPolicy({
       agentId: voiceRun?.agentId,
       voiceSessionId: voiceRun?.voiceSessionId,
-      runId: args.ctx?.runId,
+      runId: correlation.runId,
       toolName,
       toolParams: normalizedParams,
       ...(voiceRun ? { isConfirmable: () => isClientVoiceSessionConfirmable(voiceRun) } : {}),
@@ -247,10 +252,10 @@ export async function runBeforeToolCallHook(args: {
     const buildToolContext = (identity: typeof toolIdentity) => ({
       toolName,
       ...identity,
-      ...(args.ctx?.agentId && { agentId: args.ctx.agentId }),
-      ...(args.ctx?.sessionKey && { sessionKey: args.ctx.sessionKey }),
-      ...(args.ctx?.sessionId && { sessionId: args.ctx.sessionId }),
-      ...(args.ctx?.runId && { runId: args.ctx.runId }),
+      ...(correlation.agentId && { agentId: correlation.agentId }),
+      ...(correlation.sessionKey && { sessionKey: correlation.sessionKey }),
+      ...(correlation.sessionId && { sessionId: correlation.sessionId }),
+      ...(correlation.runId && { runId: correlation.runId }),
       ...(args.signal ? { abortSignal: args.signal } : {}),
       ...(args.ctx?.trace && { trace: freezeDiagnosticTraceContext(args.ctx.trace) }),
       ...(args.toolCallId && { toolCallId: args.toolCallId }),
@@ -264,7 +269,7 @@ export async function runBeforeToolCallHook(args: {
             toolName,
             params: normalizedParams,
             ...toolIdentity,
-            ...(args.ctx?.runId && { runId: args.ctx.runId }),
+            ...(correlation.runId && { runId: correlation.runId }),
             ...(args.toolCallId && { toolCallId: args.toolCallId }),
             ...(derivedToolParams.derivedPaths
               ? { derivedPaths: derivedToolParams.derivedPaths }
@@ -371,7 +376,7 @@ export async function runBeforeToolCallHook(args: {
         toolName,
         params: hookEventParams,
         ...policyAdjustedToolIdentity,
-        ...(args.ctx?.runId && { runId: args.ctx.runId }),
+        ...(correlation.runId && { runId: correlation.runId }),
         ...(args.toolCallId && { toolCallId: args.toolCallId }),
         ...(policyAdjustedDerivedToolParams.derivedPaths
           ? { derivedPaths: policyAdjustedDerivedToolParams.derivedPaths }

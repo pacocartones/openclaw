@@ -9,6 +9,7 @@ import { applyAuthHeaderOverride, applyLocalNoAuthHeaderOverride } from "../../m
 import type { AgentRuntimePlan } from "../../runtime-plan/types.js";
 import { createToolTerminalObserver } from "../../tool-terminal-outcome.js";
 import type { SystemAgentToolOptions } from "../../tools/system-agent-tool.js";
+import { bindEmbeddedAttemptExecutionAttribution } from "./attempt-execution-attribution.js";
 import { runEmbeddedAttemptWithBackend } from "./backend.js";
 import type { RunEmbeddedAgentInternalParams } from "./internal-params.js";
 import {
@@ -181,7 +182,6 @@ export async function dispatchEmbeddedRunAttempt(input: {
   });
   const attemptParams: EmbeddedRunAttemptParams = {
     operation: "attempt",
-    ...(params.attribution ? { attribution: params.attribution } : {}),
     sessionId: runtime.sessionId,
     sessionKey: runtime.sessionKey,
     conversationRecall: params.conversationRecall,
@@ -397,6 +397,7 @@ export async function dispatchEmbeddedRunAttempt(input: {
     onUserMessagePersistenceInvalidated: control.onUserMessagePersistenceInvalidated,
     onAssistantErrorMessagePersisted: params.onAssistantErrorMessagePersisted,
   };
+  bindEmbeddedAttemptExecutionAttribution(attemptParams, params.attribution);
   const rawAttempt = await runEmbeddedAttemptWithBackend(attemptParams)
     .catch((err: unknown): never => {
       throw control.getPostCompactionAbortError() ?? err;

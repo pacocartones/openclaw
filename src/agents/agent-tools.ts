@@ -31,6 +31,7 @@ import { createLazyImportLoader } from "../shared/lazy-promise.js";
 import type { SkillSnapshot, SkillUsagePath } from "../skills/types.js";
 import type { SkillWorkshopRunOptions } from "../skills/workshop/types.js";
 import { resolveGatewayMessageChannel } from "../utils/message-channel.js";
+import type { AgentExecutionAttribution } from "./agent-execution-attribution.js";
 import { wrapToolWithAbortSignal } from "./agent-tools.abort.js";
 import {
   isToolWrappedWithBeforeToolCallHook,
@@ -476,7 +477,14 @@ type OpenClawCodingToolsOptions = {
   scheduledToolPolicy?: ScheduledToolPolicyContext;
 };
 
-function createOpenClawCodingToolsInternal(options?: OpenClawCodingToolsOptions): AnyAgentTool[] {
+type OpenClawCodingToolsInternalOptions = OpenClawCodingToolsOptions & {
+  /** Admission-owned correlation; intentionally absent from the plugin SDK options. */
+  attribution?: AgentExecutionAttribution;
+};
+
+function createOpenClawCodingToolsInternal(
+  options?: OpenClawCodingToolsInternalOptions,
+): AnyAgentTool[] {
   const execToolName = "exec";
   const sandbox = options?.sandbox?.enabled ? options.sandbox : undefined;
   const isMemoryFlushRun = options?.trigger === "memory";
@@ -970,6 +978,9 @@ function createOpenClawCodingToolsInternal(options?: OpenClawCodingToolsOptions)
             allowHostBrowserControl: sandbox ? sandbox.browserAllowHostControl : true,
             agentSessionKey: options?.sessionKey,
             runId: options?.runId,
+            ...(options?.attribution
+              ? { beforeToolCallHookContext: { attribution: options.attribution } }
+              : {}),
             runSessionKey: options?.runSessionKey,
             agentChannel: resolveGatewayMessageChannel(
               options?.messageChannel ?? options?.messageProvider,
@@ -1173,6 +1184,7 @@ function createOpenClawCodingToolsInternal(options?: OpenClawCodingToolsOptions)
   } satisfies PluginHookToolRequesterContext;
   const hasRequester = Object.keys(requester).length > 0;
   const hookContext = {
+    ...(options?.attribution ? { attribution: options.attribution } : {}),
     agentId,
     ...(options?.config ? { config: options.config } : {}),
     cwd: codingRoot,
