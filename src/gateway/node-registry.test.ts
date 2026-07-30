@@ -8,6 +8,7 @@ import {
 } from "@openclaw/normalization-core/number-coercion";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GATEWAY_CLIENT_IDS } from "../../packages/gateway-protocol/src/client-info.js";
+import { NODE_INVOKE_SESSION_KEY_ENVELOPE_PROTOCOL_FEATURE } from "../../packages/gateway-protocol/src/schema/nodes.js";
 import { getCurrentActiveNodeContext, setActiveNodeContext } from "../infra/active-node-context.js";
 import { onDiagnosticEvent, resetDiagnosticEventsForTest } from "../infra/diagnostic-events.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
@@ -1160,7 +1161,7 @@ describe("gateway/node-registry", () => {
     }
   });
 
-  it("forwards the agent session that owns a stateful node invoke", async () => {
+  it("forwards non-empty session attribution to legacy node connections", async () => {
     const registry = createNodeRegistry();
     const frames = registerNode(registry);
     const invoke = registry.invoke({
@@ -1179,6 +1180,89 @@ describe("gateway/node-registry", () => {
         id: request.payload?.id ?? "",
         nodeId: "node-1",
         connId: "conn-1",
+        ok: true,
+      }),
+    ).toBe(true);
+    await expect(invoke).resolves.toMatchObject({ ok: true });
+  });
+
+  it("omits an unattributed session envelope until the node negotiates explicit clears", async () => {
+    const registry = createNodeRegistry();
+    const frames = registerNode(registry);
+    const invoke = registry.invoke({
+      nodeId: "node-1",
+      command: "debug.ping",
+      timeoutMs: 0,
+    });
+    const request = JSON.parse(frames[0] ?? "{}") as {
+      payload?: { id?: string; sessionKey?: string | null };
+    };
+
+    expect(request.payload).not.toHaveProperty("sessionKey");
+    expect(
+      registry.handleInvokeResult({
+        id: request.payload?.id ?? "",
+        nodeId: "node-1",
+        connId: "conn-1",
+        ok: true,
+      }),
+    ).toBe(true);
+    await expect(invoke).resolves.toMatchObject({ ok: true });
+  });
+
+  it("emits explicit null for negotiated unattributed node invokes", async () => {
+    const registry = createNodeRegistry();
+    const frames = registerNode(registry);
+    registry.updateProtocolFeatures("node-1", "conn-1", [
+      NODE_INVOKE_SESSION_KEY_ENVELOPE_PROTOCOL_FEATURE,
+    ]);
+    const invoke = registry.invoke({
+      nodeId: "node-1",
+      command: "debug.ping",
+      timeoutMs: 0,
+    });
+    const request = JSON.parse(frames[0] ?? "{}") as {
+      payload?: { id?: string; sessionKey?: string | null };
+    };
+
+    expect(request.payload?.sessionKey).toBeNull();
+    expect(
+      registry.handleInvokeResult({
+        id: request.payload?.id ?? "",
+        nodeId: "node-1",
+        connId: "conn-1",
+        ok: true,
+      }),
+    ).toBe(true);
+    await expect(invoke).resolves.toMatchObject({ ok: true });
+  });
+
+  it("does not let a stale connection negotiate features for its replacement", async () => {
+    const registry = createNodeRegistry();
+    registerNodeSession(registry, makeClient("conn-old", "node-1"), {});
+    const frames: string[] = [];
+    registerNodeSession(registry, makeClient("conn-new", "node-1", frames), {});
+
+    expect(
+      registry.updateProtocolFeatures("node-1", "conn-old", [
+        NODE_INVOKE_SESSION_KEY_ENVELOPE_PROTOCOL_FEATURE,
+      ]),
+    ).toBeNull();
+    const invoke = registry.invoke({
+      nodeId: "node-1",
+      command: "debug.ping",
+      timeoutMs: 0,
+    });
+    const request = JSON.parse(frames[0] ?? "{}") as {
+      payload?: { id?: string; sessionKey?: string | null };
+    };
+
+    expect(request.payload).not.toHaveProperty("sessionKey");
+    expect(
+      registry.handleInvokeResult({
+        id: request.payload?.id ?? "",
+        nodeId: "node-1",
+        connId: "conn-new",
         ok: true,
       }),
     ).toBe(true);

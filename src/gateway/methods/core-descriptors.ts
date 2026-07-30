@@ -270,6 +270,7 @@ const CORE_GATEWAY_METHOD_SPECS: readonly CoreGatewayMethodSpec[] = [
   { name: "node.describe", scope: "operator.read", since: "<=2026.7" },
   { name: "node.pluginSurface.refresh", scope: "node", since: "<=2026.7" },
   { name: "node.pluginTools.update", scope: "node", since: "<=2026.7" },
+  { name: "node.protocolFeatures.update", scope: "node", since: "2026.7" },
   { name: "node.skills.update", scope: "node", since: "<=2026.7" },
   { name: "node.pending.drain", scope: "node", since: "<=2026.7" },
   { name: "node.pending.enqueue", scope: "operator.write", since: "<=2026.7" },

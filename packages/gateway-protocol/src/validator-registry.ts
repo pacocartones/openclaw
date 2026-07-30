@@ -73,6 +73,7 @@ import {
   NodeListParamsSchema,
   NodePluginToolsUpdateParamsSchema,
   NodeSkillsUpdateParamsSchema,
+  NodeProtocolFeaturesUpdateParamsSchema,
   EnvironmentsCreateParamsSchema,
   EnvironmentsDestroyParamsSchema,
   EnvironmentsListParamsSchema,
@@ -432,6 +433,9 @@ export const validateNodeRenameParams = lazyCompile(NodeRenameParamsSchema);
 export const validateNodeListParams = lazyCompile(NodeListParamsSchema);
 export const validateNodePluginToolsUpdateParams = lazyCompile(NodePluginToolsUpdateParamsSchema);
 export const validateNodeSkillsUpdateParams = lazyCompile(NodeSkillsUpdateParamsSchema);
+export const validateNodeProtocolFeaturesUpdateParams = lazyCompile(
+  NodeProtocolFeaturesUpdateParamsSchema,
+);
 export const validateEnvironmentsCreateParams = lazyCompile(EnvironmentsCreateParamsSchema);
 export const validateEnvironmentsDestroyParams = lazyCompile(EnvironmentsDestroyParamsSchema);
 export const validateEnvironmentsListParams = lazyCompile(EnvironmentsListParamsSchema);

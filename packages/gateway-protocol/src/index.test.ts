@@ -13,6 +13,7 @@ import {
   validateModelsListParams,
   validateModelsProbeParams,
   validateNodePluginToolsUpdateParams,
+  validateNodeProtocolFeaturesUpdateParams,
   validateNodeSkillsUpdateParams,
   validateNodePresenceActivityPayload,
   validateSessionsListParams,
@@ -294,6 +295,24 @@ describe("lazy protocol validators", () => {
           description: "Too many",
           content: "content",
         })),
+      }),
+    ).toBe(false);
+  });
+
+  it("validates bounded transient node protocol features", () => {
+    expect(
+      validateNodeProtocolFeaturesUpdateParams({
+        features: [protocol.NODE_INVOKE_SESSION_KEY_ENVELOPE_PROTOCOL_FEATURE],
+      }),
+    ).toBe(true);
+    expect(
+      validateNodeProtocolFeaturesUpdateParams({
+        features: ["duplicate", "duplicate"],
+      }),
+    ).toBe(false);
+    expect(
+      validateNodeProtocolFeaturesUpdateParams({
+        features: ["x".repeat(129)],
       }),
     ).toBe(false);
   });

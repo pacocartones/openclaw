@@ -805,6 +805,7 @@ export const coreGatewayHandlers: GatewayRequestHandlers = {
       "plugin.surface.refresh",
       "node.pluginSurface.refresh",
       "node.pluginTools.update",
+      "node.protocolFeatures.update",
       "node.skills.update",
       "node.pending.pull",
       "node.pending.ack",

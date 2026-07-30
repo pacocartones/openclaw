@@ -16,6 +16,7 @@ describe("node protocol schemas", () => {
     };
 
     expect(Value.Check(NodeInvokeRequestEventSchema, request)).toBe(true);
+    expect(Value.Check(NodeInvokeRequestEventSchema, { ...request, sessionKey: null })).toBe(true);
     expect(Value.Check(NodeInvokeRequestEventSchema, { ...request, sessionKey: "" })).toBe(false);
     expect(Value.Check(NodeInvokeRequestEventSchema, { ...request, extra: true })).toBe(false);
   });
