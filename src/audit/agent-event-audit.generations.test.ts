@@ -1,5 +1,5 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
-import { cleanupTempDirs, makeTempDir } from "../../test/helpers/temp-dir.js";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import {
   getAgentEventLifecycleGeneration,
   resetAgentEventsForTest,
@@ -22,12 +22,12 @@ import { listAuditEvents } from "./audit-event-store.js";
 import type { AuditEventInput } from "./audit-event-types.js";
 import type { AuditEventWriter } from "./audit-event-writer.js";
 
-const tempDirs: string[] = [];
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 let testRunSequence = 0;
 let currentRunId = "generation-run-0";
 
 function createDatabaseOptions() {
-  return { env: { OPENCLAW_STATE_DIR: makeTempDir(tempDirs, "openclaw-audit-generation-") } };
+  return { env: { OPENCLAW_STATE_DIR: tempDirs.make("openclaw-audit-generation-") } };
 }
 
 function agentEvent(overrides: Partial<AgentEventPayload>): AgentEventPayload {
@@ -77,10 +77,6 @@ beforeEach(() => {
 afterEach(() => {
   closeOpenClawStateDatabaseForTest();
   resetDiagnosticEventsForTest();
-});
-
-afterAll(() => {
-  cleanupTempDirs(tempDirs);
 });
 
 describe("agent audit lifecycle generations", () => {
@@ -241,6 +237,14 @@ describe("agent audit lifecycle generations", () => {
     recorder.recordTool(toolEvent({ runId, seq: 2 }));
     await recorder.stop();
 
+    expect(
+      inputs.find(
+        (input) =>
+          input.action === "agent.run.finished" &&
+          input.sourceSequence === 2 &&
+          input.actorId === "old",
+      ),
+    ).toBeDefined();
     expect(inputs.findLast((input) => input.kind === "tool_action")).toMatchObject({
       actorId: "new",
       agentId: "new",

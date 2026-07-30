@@ -243,15 +243,19 @@ function projectAgentEvent(event: AgentEventPayload): AgentAuditProjection | und
   if (!runId || !phase) {
     return undefined;
   }
+  const runInstance = buildRunInstance(runId, event.lifecycleGeneration);
+  const isLifecycleTerminal =
+    event.stream === "lifecycle" && (phase === "end" || phase === "error");
   if (
     event.lifecycleGeneration &&
-    !isAgentEventLifecycleGenerationCurrent(event.lifecycleGeneration)
+    !isAgentEventLifecycleGenerationCurrent(event.lifecycleGeneration) &&
+    !(isLifecycleTerminal && startedRunInstances.has(runInstance))
   ) {
-    // The live emitter rejects stale generations before this boundary. Keep
-    // the recorder defensive so replayed/late events cannot replace admission.
+    // Stale starts cannot replace admission. A tracked pre-rotation run may
+    // still close its exact instance; rememberRunTerminal keeps the newer
+    // active admission authoritative.
     return undefined;
   }
-  const runInstance = buildRunInstance(runId, event.lifecycleGeneration);
   if (event.stream === "lifecycle" && phase === "start") {
     const provenance = deriveProvenance(event);
     rememberRunStart(runInstance, runId, provenance, event.lifecycleGeneration !== undefined);
@@ -280,7 +284,7 @@ function projectAgentEvent(event: AgentEventPayload): AgentAuditProjection | und
       },
     };
   }
-  if (event.stream === "lifecycle" && (phase === "end" || phase === "error")) {
+  if (isLifecycleTerminal) {
     const activeRunInstance = activeRunInstanceByRunId.get(runId);
     if (
       !event.lifecycleGeneration &&
