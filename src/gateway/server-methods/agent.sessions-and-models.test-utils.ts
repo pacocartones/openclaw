@@ -138,7 +138,6 @@ describe("gateway agent handler", () => {
       payloads: [{ text: "ok" }],
       meta: { durationMs: 100 },
     });
-
     await invokeAgent(
       {
         message: "forged exec followup",
@@ -1205,7 +1204,6 @@ describe("gateway agent handler", () => {
       payloads: [{ text: "ok" }],
       meta: { durationMs: 100 },
     });
-
     await invokeAgent(
       {
         message: "resume channel session",
@@ -2008,6 +2006,7 @@ describe("gateway agent handler", () => {
   });
 
   it("infers selected-global agent id from agent-prefixed session aliases", async () => {
+    mocks.registerAgentRunContext.mockClear();
     mocks.listAgentIds.mockReturnValue(["main", "work"]);
     mocks.loadConfigReturn = {
       agents: { list: [{ id: "main", default: true }, { id: "work" }] },
@@ -2052,6 +2051,21 @@ describe("gateway agent handler", () => {
       agentId: "work",
       clone: false,
     });
+    expect(mockCallArg(mocks.registerAgentRunContext, 0, 1)).toEqual(
+      expect.objectContaining({
+        attribution: {
+          runId: "alias-global-session-agent-id",
+          lifecycleGeneration: "test-generation",
+          sessionKey: "global",
+          sessionId: "global-work-session-id",
+          agentId: "work",
+        },
+        sessionKey: "global",
+        sessionId: "global-work-session-id",
+        agentId: "work",
+        lifecycleGeneration: "test-generation",
+      }),
+    );
   });
 
   it("registers tool event recipients for active selected-global alias runs", async () => {

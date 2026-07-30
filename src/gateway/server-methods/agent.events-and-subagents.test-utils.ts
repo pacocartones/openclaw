@@ -277,10 +277,24 @@ describe("gateway agent handler", () => {
     expect(callArgs.suppressPromptPersistence).toBe(true);
     expect(mocks.updateSessionStore).not.toHaveBeenCalled();
     expect(context.addChatRun).not.toHaveBeenCalled();
-    expect(mocks.registerAgentRunContext).toHaveBeenCalledWith("test-backend-internal-effects", {
+    const runContext = mockCallArg(mocks.registerAgentRunContext, 0, 1) as {
+      attribution: Record<string, unknown>;
+    };
+    expect(runContext).toEqual({
+      attribution: {
+        runId: "test-backend-internal-effects",
+        lifecycleGeneration: "test-generation",
+        sessionKey: "agent:main:main",
+        sessionId: "existing-session-id",
+        agentId: "main",
+      },
+      sessionKey: "agent:main:main",
+      sessionId: "existing-session-id",
+      agentId: "main",
       isControlUiVisible: false,
       lifecycleGeneration: "test-generation",
     });
+    expect(Object.isFrozen(runContext.attribution)).toBe(true);
   });
 
   it("allows backend internal runs without a persisted session row", async () => {
@@ -574,10 +588,24 @@ describe("gateway agent handler", () => {
     expect(context.broadcastToConnIds).not.toHaveBeenCalled();
     expect(mocks.getLatestSubagentRunByChildSessionKey).not.toHaveBeenCalled();
     expect(mocks.replaceSubagentRunAfterSteer).not.toHaveBeenCalled();
-    expect(mocks.registerAgentRunContext).toHaveBeenCalledWith("test-stateless-model-run", {
+    const runContext = mockCallArg(mocks.registerAgentRunContext, 0, 1) as {
+      attribution: Record<string, unknown>;
+    };
+    expect(runContext).toEqual({
+      attribution: {
+        runId: "test-stateless-model-run",
+        lifecycleGeneration: "test-generation",
+        sessionKey: "agent:main:explicit:model-run-123e4567-e89b-12d3-a456-426614174000",
+        sessionId: "model-run-123e4567-e89b-12d3-a456-426614174000",
+        agentId: "main",
+      },
+      sessionKey: "agent:main:explicit:model-run-123e4567-e89b-12d3-a456-426614174000",
+      sessionId: "model-run-123e4567-e89b-12d3-a456-426614174000",
+      agentId: "main",
       isControlUiVisible: false,
       lifecycleGeneration: "test-generation",
     });
+    expect(Object.isFrozen(runContext.attribution)).toBe(true);
   });
 
   it("respects explicit bestEffortDeliver=false for main session runs", async () => {

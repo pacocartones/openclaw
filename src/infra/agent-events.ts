@@ -1,6 +1,7 @@
 // Stores and broadcasts agent lifecycle and streaming events.
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
+import type { AgentExecutionAttribution } from "../agents/agent-execution-attribution.js";
 import type { VerboseLevel } from "../auto-reply/thinking.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { notifyListeners, registerListener } from "../shared/listeners.js";
@@ -77,6 +78,8 @@ export type AgentEventRuntimePayload = AgentEventPayload & {
 
 /** Per-run metadata used to stamp events and gate Control UI visibility. */
 type AgentRunContext = {
+  /** Immutable admission-owned correlation; later context merges cannot replace it. */
+  readonly attribution?: AgentExecutionAttribution;
   sessionKey?: string;
   /** Resolved agent owner, including for unscoped session keys. */
   agentId?: string;
@@ -142,6 +145,35 @@ function getAgentEventExecutionContext() {
     AGENT_EVENT_EXECUTION_CONTEXT_KEY,
     () => new AsyncLocalStorage<AgentEventExecutionContext>(),
   );
+}
+
+function attachAgentExecutionAttribution(
+  context: AgentRunContext,
+  attribution: AgentExecutionAttribution | undefined,
+): void {
+  if (!attribution || context.attribution) {
+    return;
+  }
+  Object.defineProperty(context, "attribution", {
+    value: attribution,
+    enumerable: true,
+    configurable: false,
+    writable: false,
+  });
+}
+
+function createAgentRunContext(
+  context: AgentRunContext,
+  lifecycleGeneration: string,
+): AgentRunContext {
+  const { attribution, ...fields } = context;
+  const stored = {
+    ...fields,
+    lifecycleGeneration,
+    registeredAt: context.registeredAt ?? Date.now(),
+  };
+  attachAgentExecutionAttribution(stored, attribution);
+  return stored;
 }
 
 /** Runs one execution with immutable ownership inherited by every emitted stream event. */
@@ -242,11 +274,7 @@ export function registerAgentRunContext(runId: string, context: AgentRunContext,
   }
   const existing = state.runContextById.get(runId);
   if (!existing) {
-    state.runContextById.set(runId, {
-      ...context,
-      lifecycleGeneration: context.lifecycleGeneration ?? state.lifecycleGeneration,
-      registeredAt: context.registeredAt ?? Date.now(),
-    });
+    state.runContextById.set(runId, createAgentRunContext(context, lifecycleGeneration));
     return;
   }
   if (
@@ -256,6 +284,7 @@ export function registerAgentRunContext(runId: string, context: AgentRunContext,
   ) {
     return;
   }
+  attachAgentExecutionAttribution(existing, context.attribution);
   if (context.sessionKey && existing.sessionKey !== context.sessionKey) {
     existing.sessionKey = context.sessionKey;
   }
@@ -376,11 +405,7 @@ export function claimAgentRunContext(
     );
     return claimId;
   }
-  state.runContextById.set(runId, {
-    ...context,
-    lifecycleGeneration,
-    registeredAt: context.registeredAt ?? Date.now(),
-  });
+  state.runContextById.set(runId, createAgentRunContext(context, lifecycleGeneration));
   state.seqByRun.delete(runId);
   clearAgentRunUsage(runId);
   return claimId;
