@@ -363,6 +363,7 @@ export function buildNodeSystemRunInvoke(params: {
   return {
     nodeId: params.target.nodeId,
     command: "system.run",
+    sessionKey: params.sessionKey,
     params: {
       command: params.command,
       rawCommand: params.rawCommand,
@@ -435,6 +436,7 @@ export async function prepareNodeSystemRun(params: {
     {
       nodeId: params.target.nodeId,
       command: "system.run.prepare",
+      sessionKey: params.request.sessionKey,
       params: {
         command: params.target.argv,
         rawCommand: params.request.command,
