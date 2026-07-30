@@ -654,7 +654,10 @@ export async function recordLoopOutcome(args: {
     return;
   }
   let recordedOutcome: ToolOutcomeObservation | undefined;
+  let onToolOutcome: HookContext["onToolOutcome"];
   try {
+    const loopDetection = args.ctx?.loopDetection;
+    onToolOutcome = args.ctx?.onToolOutcome;
     const {
       getArgumentChurnNoProgressStreak,
       getDiagnosticSessionState,
@@ -671,7 +674,7 @@ export async function recordLoopOutcome(args: {
       toolCallId: args.toolCallId,
       result: args.result,
       error: args.error,
-      config: args.ctx.loopDetection,
+      config: loopDetection,
       ...(correlation.runId && { runId: correlation.runId }),
     });
     const churnContinues =
@@ -688,7 +691,7 @@ export async function recordLoopOutcome(args: {
       active: churnContinues,
       existingOnly: true,
     });
-    if (record?.resultHash && args.ctx.onToolOutcome) {
+    if (record?.resultHash && onToolOutcome) {
       recordedOutcome = {
         toolName: record.toolName,
         argsHash: record.argsHash,
@@ -702,7 +705,7 @@ export async function recordLoopOutcome(args: {
     log.warn(`tool loop outcome tracking failed: tool=${args.toolName} error=${String(err)}`);
   }
   if (recordedOutcome) {
-    args.ctx.onToolOutcome?.(recordedOutcome);
+    onToolOutcome?.(recordedOutcome);
   }
 }
 

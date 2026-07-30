@@ -104,6 +104,7 @@ export async function runBeforeToolCallHook(args: {
   let releaseArgumentChurnPolicyWait: (() => void) | undefined;
 
   try {
+    const loopDetection = args.ctx?.loopDetection;
     if (correlation.sessionKey) {
       const {
         markDiagnosticArgumentChurnObservation,
@@ -122,11 +123,11 @@ export async function runBeforeToolCallHook(args: {
         sessionState,
         toolName,
         params,
-        args.ctx.loopDetection,
+        loopDetection,
         loopScope,
       );
 
-      if (args.ctx.loopDetection?.enabled === true) {
+      if (loopDetection?.enabled === true) {
         // Each concurrent policy/approval wait owns a token. Releasing one call
         // must not expose the churn clock while a sibling is still pending.
         const policyWaitToken = Symbol("before-tool-call-policy-wait");
@@ -189,15 +190,8 @@ export async function runBeforeToolCallHook(args: {
         }
       }
 
-      if (args.ctx.loopDetection?.enabled !== false) {
-        recordToolCall(
-          sessionState,
-          toolName,
-          params,
-          args.toolCallId,
-          args.ctx.loopDetection,
-          loopScope,
-        );
+      if (loopDetection?.enabled !== false) {
+        recordToolCall(sessionState, toolName, params, args.toolCallId, loopDetection, loopScope);
       }
     }
 
