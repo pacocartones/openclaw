@@ -979,6 +979,38 @@ describe("executeNodeHostCommand", () => {
     expect(resolveExecHostApprovalContextMock).toHaveBeenCalledTimes(2);
   });
 
+  it("clears node-prepared attribution when the gateway request has none", async () => {
+    resolveExecHostApprovalContextMock.mockReturnValue({
+      approvals: { allowlist: [], file: { version: 1, agents: {} } },
+      hostSecurity: "full",
+      hostAsk: "always",
+      askFallback: "deny",
+    });
+
+    const result = await executeNodeHostCommand(
+      createNodeHostRequest({
+        agentId: undefined,
+        sessionKey: undefined,
+      }),
+    );
+
+    expect(result.details?.status).toBe("approval-pending");
+    expect(requireRegisteredApprovalRequest()).toMatchObject({
+      systemRunPlan: {
+        agentId: null,
+        sessionKey: null,
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(callGatewayToolMock).toHaveBeenCalledTimes(3);
+    });
+    expect(requireRunParams(requireGatewayCall(2)).systemRunPlan).toMatchObject({
+      agentId: null,
+      sessionKey: null,
+    });
+  });
+
   it("forwards cancellation without removing detached node approval scopes", async () => {
     const abortController = new AbortController();
     resolveExecHostApprovalContextMock.mockReturnValue({

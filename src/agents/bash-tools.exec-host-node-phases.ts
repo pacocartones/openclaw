@@ -462,8 +462,8 @@ export async function prepareNodeSystemRun(params: {
   // Gateway-owned agent or session that requested preparation.
   const plan: SystemRunApprovalPlan = {
     ...preparedPlan,
-    ...(params.request.agentId ? { agentId: params.request.agentId } : {}),
-    ...(params.request.sessionKey ? { sessionKey: params.request.sessionKey } : {}),
+    agentId: params.request.agentId ?? null,
+    sessionKey: params.request.sessionKey ?? null,
   };
   return {
     plan,
