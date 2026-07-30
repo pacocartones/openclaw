@@ -329,6 +329,7 @@ export function startAgentRunExecution(params: {
           accountId: params.delivery.resolvedAccountId,
           threadId: prepared.resolvedThreadId,
           runContext,
+          attribution: prepared.attribution,
           ...(execApprovalFollowupRuntimeHandoff?.bashElevated
             ? { bashElevated: execApprovalFollowupRuntimeHandoff.bashElevated }
             : {}),

@@ -1,8 +1,17 @@
+import type { AgentExecutionAttribution } from "../../agent-execution-attribution.js";
 import type { AgentExecutionAuthBinding } from "../../execution-auth-binding.js";
 import type { SystemAgentToolOptions } from "../../tools/system-agent-tool.js";
 import type { RunEmbeddedAgentParams } from "./params.js";
 
-export type RunEmbeddedAgentInternalParams = RunEmbeddedAgentParams & {
+export type AgentExecutionStartedInfo = {
+  lifecycleGeneration?: string;
+  attribution?: AgentExecutionAttribution;
+};
+
+export type RunEmbeddedAgentInternalParams = Omit<RunEmbeddedAgentParams, "onExecutionStarted"> & {
+  /** Admission-owned execution correlation carried unchanged across attempts. */
+  attribution?: AgentExecutionAttribution;
+  onExecutionStarted?: (info?: AgentExecutionStartedInfo) => void;
   onSuccessfulAuthBinding?: (binding: AgentExecutionAuthBinding) => void;
   authProfileStateMode?: "read-write" | "read-only";
   /** Keep staged setup config and credentials outside configured Gateway ownership. */

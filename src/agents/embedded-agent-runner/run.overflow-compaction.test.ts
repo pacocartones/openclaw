@@ -19,6 +19,7 @@ import {
   withAgentRunLifecycleGeneration,
 } from "../../infra/agent-events.js";
 import { AGENT_HARNESS_SESSION_KEY_RESERVED_MESSAGE } from "../../sessions/agent-harness-session-key.js";
+import { createAgentExecutionAttribution } from "../agent-execution-attribution.js";
 import type { AgentHarness } from "../harness/types.js";
 import type { AgentInternalEvent } from "../internal-events.js";
 import type {
@@ -1113,11 +1114,20 @@ describe("runEmbeddedAgent overflow compaction trigger routing", () => {
     let enqueueCount = 0;
     let runQueuedTask: (() => void) | undefined;
     const onExecutionStarted = vi.fn();
+    const originalLifecycleGeneration = getAgentEventLifecycleGeneration();
+    const attribution = createAgentExecutionAttribution({
+      runId: "queued-across-restart",
+      lifecycleGeneration: originalLifecycleGeneration,
+      sessionKey: overflowBaseRunParams.sessionKey,
+      sessionId: overflowBaseRunParams.sessionId,
+      agentId: overflowBaseRunParams.agentId,
+    });
     const runPromise = runEmbeddedAgent({
       ...overflowBaseRunParams,
       runId: "queued-across-restart",
       trigger: "user",
-      lifecycleGeneration: getAgentEventLifecycleGeneration(),
+      lifecycleGeneration: originalLifecycleGeneration,
+      attribution,
       onExecutionStarted,
       enqueue: async (task) => {
         enqueueCount += 1;
@@ -1137,16 +1147,24 @@ describe("runEmbeddedAgent overflow compaction trigger routing", () => {
     runQueuedTask?.();
     await runPromise;
 
-    expectMockCallFields(mockedRunEmbeddedAttempt, {
+    const attempt = expectMockCallFields(mockedRunEmbeddedAttempt, {
       lifecycleGeneration: currentLifecycleGeneration,
     });
+    expect(attempt.attribution).toEqual({
+      ...attribution,
+      lifecycleGeneration: currentLifecycleGeneration,
+    });
+    expect(attempt.attribution).not.toBe(attribution);
+    expect(Object.isFrozen(attempt.attribution)).toBe(true);
     expect(getAgentRunContext("queued-across-restart")).toEqual(
       expect.objectContaining({
+        attribution: attempt.attribution,
         lifecycleGeneration: currentLifecycleGeneration,
       }),
     );
     expect(onExecutionStarted).toHaveBeenCalledWith({
       lifecycleGeneration: currentLifecycleGeneration,
+      attribution: attempt.attribution,
     });
   });
 

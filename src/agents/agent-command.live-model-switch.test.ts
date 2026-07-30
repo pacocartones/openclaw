@@ -25,6 +25,7 @@ import {
   resolveTestModelAliasFromPair,
   resolveTestModelRefFromString,
 } from "./agent-command.live-model-switch.test-helpers.js";
+import { createAgentExecutionAttribution } from "./agent-execution-attribution.js";
 import {
   INTERNAL_RUNTIME_CONTEXT_BEGIN,
   INTERNAL_RUNTIME_CONTEXT_END,
@@ -649,11 +650,13 @@ vi.mock("../acp/control-plane/manager.js", () => ({
 }));
 
 let agentCommand: typeof import("./agent-command.js").agentCommand;
+let agentCommandFromIngress: typeof import("./agent-command.js").agentCommandFromIngress;
 let agentCommandTesting: typeof import("./agent-command.js").testing;
 
 beforeAll(async () => {
   const mod = await import("./agent-command.js");
   agentCommand ??= mod.agentCommand;
+  agentCommandFromIngress ??= mod.agentCommandFromIngress;
   agentCommandTesting ??= mod.testing;
 });
 
@@ -4387,20 +4390,55 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
 
   it("keeps session provenance for internal ACP turns", async () => {
     setupAcpSession();
+    const attribution = createAgentExecutionAttribution({
+      runId: "session-1",
+      lifecycleGeneration: "test-generation",
+      sessionKey: "agent:main:main",
+      sessionId: "session-1",
+      agentId: "main",
+    });
 
     await agentCommand({
       message: "internal ACP turn",
       sessionKey: "agent:main:main",
       sessionEffects: "internal",
+      attribution,
     });
 
     expect(state.registerAgentRunContextMock).toHaveBeenCalledWith(
       "session-1",
       expect.objectContaining({
+        attribution,
         sessionKey: "agent:main:main",
         sessionId: "session-1",
         isControlUiVisible: false,
       }),
+    );
+  });
+
+  it("drops caller-supplied attribution at the public ingress boundary", async () => {
+    setupAcpSession();
+    const forgedAttribution = createAgentExecutionAttribution({
+      runId: "forged-run",
+      lifecycleGeneration: "forged-generation",
+      sessionKey: "agent:main:forged",
+      sessionId: "forged-session",
+      agentId: "forged-agent",
+    });
+
+    await agentCommandFromIngress({
+      message: "public ingress ACP turn",
+      sessionKey: "agent:main:main",
+      sessionEffects: "internal",
+      allowModelOverride: false,
+      attribution: forgedAttribution,
+    } as Parameters<typeof agentCommandFromIngress>[0] & {
+      attribution: typeof forgedAttribution;
+    });
+
+    expect(state.registerAgentRunContextMock).toHaveBeenCalledWith(
+      "session-1",
+      expect.not.objectContaining({ attribution: forgedAttribution }),
     );
   });
 

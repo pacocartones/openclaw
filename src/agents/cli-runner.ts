@@ -474,7 +474,9 @@ async function finalizeCliContextEngineTurn(params: {
 /** Prepares and runs one CLI-backed agent turn. */
 export function runCliAgent(paramsInput: RunCliAgentParams): Promise<EmbeddedAgentRunResult> {
   const lifecycleGeneration =
-    paramsInput.lifecycleGeneration ?? captureAgentRunLifecycleGeneration(paramsInput.runId);
+    paramsInput.attribution?.lifecycleGeneration ??
+    paramsInput.lifecycleGeneration ??
+    captureAgentRunLifecycleGeneration(paramsInput.runId);
   const params = {
     ...paramsInput,
     lifecycleGeneration,

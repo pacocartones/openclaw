@@ -47,7 +47,11 @@ import { loadSessionStoreRuntime, resolveAgentCommandDeps } from "./command/runt
 import { persistSessionEntry, prepareCurrentRunDelivery } from "./command/session-helpers.js";
 import { prepareEmbeddedSessionState } from "./command/session-preparation.js";
 import { clearRotatedSessionMetadata } from "./command/session.js";
-import type { AgentCommandIngressOpts, AgentCommandOpts } from "./command/types.js";
+import type {
+  AgentCommandGatewayIngressOpts,
+  AgentCommandIngressOpts,
+  AgentCommandOpts,
+} from "./command/types.js";
 import {
   removeInternalSessionEffectsSession,
   resolveInternalSessionEffectsTarget,
@@ -134,7 +138,11 @@ async function agentCommandInternal(
     manifestMetadataSnapshot,
     modelManifestContext,
   } = prepared;
-  let lifecycleGeneration = opts.lifecycleGeneration ?? captureAgentRunLifecycleGeneration(runId);
+  let lifecycleGeneration =
+    opts.attribution?.lifecycleGeneration ??
+    opts.lifecycleGeneration ??
+    captureAgentRunLifecycleGeneration(runId);
+  let executionAttribution = opts.attribution;
   let sessionEntry = prepared.sessionEntry,
     runOwnedSessionId = sessionId;
   const sessionStateActor = classifySessionStateActor({
@@ -380,6 +388,7 @@ async function agentCommandInternal(
           workspaceDir,
           runId,
           lifecycleGeneration,
+          ...(opts.attribution ? { attribution: opts.attribution } : {}),
           acpManager,
           acpResolution,
           trackInternalModelRunTarget,
@@ -436,11 +445,15 @@ async function agentCommandInternal(
       sessionEntry = modelSelection.sessionEntry;
       const embeddedAttempt = await runEmbeddedAgentAttempt({
         prepared,
-        opts,
+        opts:
+          executionAttribution === opts.attribution
+            ? opts
+            : { ...opts, attribution: executionAttribution },
         sessionEntry,
         lifecycleGeneration,
-        onLifecycleGenerationChanged: (nextLifecycleGeneration) => {
+        onLifecycleGenerationChanged: (nextLifecycleGeneration, nextAttribution) => {
           lifecycleGeneration = nextLifecycleGeneration;
+          executionAttribution = nextAttribution ?? executionAttribution;
         },
         suppressVisibleSessionEffects,
         preserveUserFacingSessionModelState,
@@ -579,26 +592,31 @@ export async function agentCommand(
 }
 
 async function agentCommandFromIngressInternal(
-  opts: AgentCommandIngressOpts,
+  opts: AgentCommandGatewayIngressOpts,
   runtime: RuntimeEnv = defaultRuntime,
   deps?: CliDeps,
   recovery?: {
     restoreAdmittedRecovery?: () => Promise<MainSessionRecoveryPendingTarget | undefined>;
   },
+  trustedAttribution = false,
 ) {
-  if (typeof opts.allowModelOverride !== "boolean") {
+  const internalOpts: AgentCommandGatewayIngressOpts = trustedAttribution
+    ? opts
+    : (({ attribution: _untrustedAttribution, ...rest }) => rest)(opts);
+  if (typeof internalOpts.allowModelOverride !== "boolean") {
     throw new Error("allowModelOverride must be explicitly set for ingress agent runs.");
   }
   const lifecycleGeneration =
-    opts.lifecycleGeneration ?? captureAgentRunLifecycleGeneration(opts.runId ?? "");
+    internalOpts.lifecycleGeneration ??
+    captureAgentRunLifecycleGeneration(internalOpts.runId ?? "");
   return await withAgentRunLifecycleGeneration(lifecycleGeneration, async () => {
     const result = await runWithAgentCommandRecoveryOwner({
       lifecycleGeneration,
       mode: "claim",
       opts: {
-        ...opts,
+        ...internalOpts,
         lifecycleGeneration,
-        senderIsOwner: opts.senderIsOwner === true,
+        senderIsOwner: internalOpts.senderIsOwner === true,
       },
       prepare: async (preparedOpts) => await prepareAgentCommandExecution(preparedOpts, runtime),
       restoreAdmittedRecovery: recovery?.restoreAdmittedRecovery,
@@ -606,7 +624,7 @@ async function agentCommandFromIngressInternal(
     });
 
     if (result) {
-      emitIngressModelUsageDiagnostic(result, opts);
+      emitIngressModelUsageDiagnostic(result, internalOpts);
     }
 
     return result;
@@ -624,14 +642,14 @@ export async function agentCommandFromIngress(
 
 /** Internal Gateway entrypoint that restores a rejected restart-recovery admission. */
 export async function agentCommandFromGatewayIngress(
-  opts: AgentCommandIngressOpts,
+  opts: AgentCommandGatewayIngressOpts,
   runtime: RuntimeEnv,
   deps: CliDeps | undefined,
   recovery: {
     restoreAdmittedRecovery?: () => Promise<MainSessionRecoveryPendingTarget | undefined>;
   },
 ) {
-  return await agentCommandFromIngressInternal(opts, runtime, deps, recovery);
+  return await agentCommandFromIngressInternal(opts, runtime, deps, recovery, true);
 }
 
 export const testing = {

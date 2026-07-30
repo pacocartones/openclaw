@@ -16,6 +16,7 @@ import type {
   UserTurnInput,
   UserTurnTranscriptRecorder,
 } from "../../sessions/user-turn-transcript.types.js";
+import type { AgentExecutionAttribution } from "../agent-execution-attribution.js";
 import type { ExecElevatedDefaults } from "../bash-tools.exec-types.js";
 import type { BootstrapContextRunKind } from "../bootstrap-mode.js";
 import type { CliSessionBindingFacts } from "../cli-runner/types.js";
@@ -55,6 +56,8 @@ export type AgentRunContext = {
 /** Full trusted option surface for running an agent command. */
 export type AgentCommandOpts = {
   message: string;
+  /** Admission-owned execution correlation. Never accepted from public request schemas. */
+  attribution?: AgentExecutionAttribution;
   /** User-visible transcript body; defaults to message and excludes runtime-only context. */
   transcriptMessage?: string;
   /** Durable media metadata for the user-visible transcript turn. */
@@ -207,10 +210,15 @@ export type AgentCommandOpts = {
 /** Restricted option surface for external ingress callsites. */
 export type AgentCommandIngressOpts = Omit<
   AgentCommandOpts,
-  "senderIsOwner" | "allowModelOverride"
+  "senderIsOwner" | "allowModelOverride" | "attribution"
 > & {
   /** Trusted sender identity bit for command/channel-action auth; defaults false for ingress. */
   senderIsOwner?: boolean;
   /** Ingress callsites must always pass explicit model-override authorization state. */
   allowModelOverride: boolean;
+};
+
+/** Trusted Gateway ingress surface; never exported through the plugin SDK. */
+export type AgentCommandGatewayIngressOpts = AgentCommandIngressOpts & {
+  attribution?: AgentExecutionAttribution;
 };

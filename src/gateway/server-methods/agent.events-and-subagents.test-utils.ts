@@ -270,6 +270,7 @@ describe("gateway agent handler", () => {
     );
 
     const callArgs = await waitForAgentCommandCall<{
+      attribution?: Record<string, unknown>;
       sessionEffects?: string;
       suppressPromptPersistence?: boolean;
     }>();
@@ -295,6 +296,7 @@ describe("gateway agent handler", () => {
       lifecycleGeneration: "test-generation",
     });
     expect(Object.isFrozen(runContext.attribution)).toBe(true);
+    expect(callArgs.attribution).toBe(runContext.attribution);
   });
 
   it("allows backend internal runs without a persisted session row", async () => {

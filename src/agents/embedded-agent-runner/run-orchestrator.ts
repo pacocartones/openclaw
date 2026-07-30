@@ -73,7 +73,7 @@ import type { EmbeddedAgentRunResult } from "./types.js";
 const EMPTY_EMBEDDED_AGENT_CONFIG: OpenClawConfig = Object.freeze({});
 
 export function runEmbeddedAgent(
-  paramsInput: RunEmbeddedAgentParams,
+  paramsInput: RunEmbeddedAgentParams | RunEmbeddedAgentInternalParams,
 ): Promise<EmbeddedAgentRunResult> {
   const internalParamsInput = paramsInput as RunEmbeddedAgentInternalParams;
   const requestedProvider = normalizeOptionalString(internalParamsInput.provider);
@@ -84,6 +84,7 @@ export function runEmbeddedAgent(
     internalParamsInput.config ??
     (needsConfiguredDefault ? (getRuntimeConfigSnapshot() ?? undefined) : undefined);
   const lifecycleGeneration =
+    internalParamsInput.attribution?.lifecycleGeneration ??
     internalParamsInput.lifecycleGeneration ??
     captureAgentRunLifecycleGeneration(internalParamsInput.runId);
   return withAgentRunLifecycleGeneration(lifecycleGeneration, () =>
@@ -267,7 +268,10 @@ async function runEmbeddedAgentInternal(
           sessionId: params.sessionId,
           tracker: startupStages,
         });
-        params.onExecutionStarted?.({ lifecycleGeneration });
+        params.onExecutionStarted?.({
+          lifecycleGeneration,
+          ...(params.attribution ? { attribution: params.attribution } : {}),
+        });
         notifyExecutionPhase("runner_entered");
         const canonicalWorkspace = resolveUserPath(
           resolveAgentWorkspaceDir(preparedModelRuntime.config, preparedAgentId),

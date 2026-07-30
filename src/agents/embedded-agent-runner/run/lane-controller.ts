@@ -7,18 +7,19 @@ import {
 } from "../../../infra/agent-events.js";
 import { enqueueCommandInLane, getCommandLaneSnapshot } from "../../../process/command-queue.js";
 import type { CommandQueueEnqueueOptions } from "../../../process/command-queue.types.js";
+import { createAgentExecutionAttribution } from "../../agent-execution-attribution.js";
 import { withSessionPlacementTurnAdmission } from "../../session-placement-admission.js";
 import type { EmbeddedAgentRunResult } from "../types.js";
+import type { RunEmbeddedAgentInternalParams } from "./internal-params.js";
 import {
   EMBEDDED_RUN_LANE_TIMEOUT_GRACE_MS,
   resolveEmbeddedRunLaneTimeoutMs,
   resolveEmbeddedRunSessionQueuePriority,
   withEmbeddedRunLaneTimeout,
 } from "./lane-runtime.js";
-import type { RunEmbeddedAgentParams } from "./params.js";
 import { assertAgentHarnessRunAdmission } from "./session-bootstrap.js";
 
-type LaneParams = RunEmbeddedAgentParams & {
+type LaneParams = RunEmbeddedAgentInternalParams & {
   sessionFile: string;
 };
 
@@ -132,7 +133,20 @@ export function createEmbeddedRunLaneController<TParams extends LaneParams>(opti
         }
         lifecycleGeneration = currentLifecycleGeneration;
         options.setLifecycleGeneration(lifecycleGeneration);
-        params = { ...params, lifecycleGeneration };
+        const attribution = params.attribution
+          ? createAgentExecutionAttribution({
+              ...params.attribution,
+              lifecycleGeneration,
+              sessionKey: params.sessionKey,
+              sessionId: params.sessionId,
+              agentId: params.agentId,
+            })
+          : undefined;
+        params = {
+          ...params,
+          lifecycleGeneration,
+          ...(attribution ? { attribution } : {}),
+        };
         options.setParams(params);
       }
       // Queue waits can outlive durable harness and placement bindings.
@@ -150,6 +164,7 @@ export function createEmbeddedRunLaneController<TParams extends LaneParams>(opti
           () => {
             claimAgentRunContext(params.runId, {
               ...existingContext,
+              ...(params.attribution ? { attribution: params.attribution } : {}),
               sessionKey: params.sessionKey ?? existingContext?.sessionKey,
               sessionId: params.sessionId ?? existingContext?.sessionId,
               lifecycleGeneration,
