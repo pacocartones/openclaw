@@ -39,6 +39,7 @@ import {
   attachCliMessagingDeliveryEvidence,
   getCliMessagingDeliveryEvidence,
 } from "./cli-runner/delivery-evidence.js";
+import { bindCliRunExecutionAttribution } from "./cli-runner/execution-attribution.js";
 import { cliBackendLog, formatCliBackendOutputDigest } from "./cli-runner/log.js";
 import { hashCliReseedPrompt } from "./cli-runner/reseed-envelope.js";
 import {
@@ -473,12 +474,12 @@ async function finalizeCliContextEngineTurn(params: {
 
 /** Prepares and runs one CLI-backed agent turn. */
 export function runCliAgent(paramsInput: RunCliAgentParams): Promise<EmbeddedAgentRunResult> {
+  const attributedParams = bindCliRunExecutionAttribution(paramsInput);
   const lifecycleGeneration =
-    paramsInput.attribution?.lifecycleGeneration ??
-    paramsInput.lifecycleGeneration ??
-    captureAgentRunLifecycleGeneration(paramsInput.runId);
+    attributedParams.lifecycleGeneration ??
+    captureAgentRunLifecycleGeneration(attributedParams.runId);
   const params = {
-    ...paramsInput,
+    ...attributedParams,
     lifecycleGeneration,
   };
   // Observability services register before turns and keep subscriptions process-stable.

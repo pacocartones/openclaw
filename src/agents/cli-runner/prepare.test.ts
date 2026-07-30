@@ -25,6 +25,7 @@ import {
   createTestRegistry,
 } from "../../test-utils/channel-plugins.js";
 import { captureEnv, setTestEnvValue } from "../../test-utils/env.js";
+import { createAgentExecutionAttribution } from "../agent-execution-attribution.js";
 import { readExternalCliBootstrapCredential as readExternalCliBootstrapCredentialImpl } from "../auth-profiles/external-cli-sync.js";
 import { resolveApiKeyForProfile as resolveApiKeyForProfileImpl } from "../auth-profiles/oauth.js";
 import {
@@ -2902,7 +2903,7 @@ describe("prepareCliRunContext", () => {
     expect(resolveMcpLoopbackScopedTools).not.toHaveBeenCalled();
   });
 
-  it("binds current turn context into the bundle MCP client grant", async () => {
+  it("binds admitted current turn context into the bundle MCP client grant", async () => {
     const getActiveMcpLoopbackRuntime = vi.fn(() => ({
       port: 31783,
       ownerToken: "loopback-owner-token",
@@ -2949,12 +2950,21 @@ describe("prepareCliRunContext", () => {
       },
     });
     const context = await fixture.prepare({
-      sessionKey: "agent:main:telegram:group:chat123",
+      attribution: createAgentExecutionAttribution({
+        runId: "run-test-room-event-tools",
+        lifecycleGeneration: "generation-admitted",
+        sessionKey: "agent:main:telegram:group:chat123",
+        sessionId: "session-test",
+        agentId: "worker",
+      }),
+      sessionKey: "agent:forged:main",
+      sessionId: "forged-session",
       runtimePolicySessionKey: "agent:worker:discord:default:direct:canonical-sender",
-      agentId: "worker",
+      agentId: "forged-agent",
       provider: "native-cli",
       modelProvider: "anthropic",
-      runId: "run-test-room-event-tools",
+      runId: "forged-run",
+      lifecycleGeneration: "generation-forged",
       sessionEntry: {
         execHost: "node",
         execSecurity: "allowlist",
