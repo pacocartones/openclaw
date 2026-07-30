@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import {
+  claimAgentRunContext,
   getAgentEventLifecycleGeneration,
+  registerAgentRunContext,
   resetAgentEventsForTest,
   rotateAgentEventLifecycleGeneration,
   type AgentEventPayload,
@@ -207,6 +209,11 @@ describe("agent audit lifecycle generations", () => {
     });
     const runId = "run-late-old-terminal";
     const oldGeneration = getAgentEventLifecycleGeneration();
+    registerAgentRunContext(runId, {
+      lifecycleGeneration: oldGeneration,
+      sessionKey: "agent:old:main",
+      agentId: "old",
+    });
 
     recorder.record(
       agentEvent({
@@ -217,6 +224,11 @@ describe("agent audit lifecycle generations", () => {
       }),
     );
     const newGeneration = rotateAgentEventLifecycleGeneration();
+    claimAgentRunContext(runId, {
+      lifecycleGeneration: newGeneration,
+      sessionKey: "agent:new:main",
+      agentId: "new",
+    });
     recorder.record(
       agentEvent({
         runId,
@@ -367,6 +379,83 @@ describe("agent audit lifecycle generations", () => {
       sessionKey: "agent:retained:main",
       sessionId: "session-retained",
     });
+  });
+
+  it("keeps an admitted pre-rotation terminal after provenance cache pressure", async () => {
+    const inputs: AuditEventInput[] = [];
+    const recorder = createAgentEventAuditRecorder({
+      writer: captureAuditWriter(inputs),
+      terminalSettleMs: 0,
+    });
+    const runId = "run-open-through-cache-pressure";
+    const oldGeneration = getAgentEventLifecycleGeneration();
+
+    recorder.record(
+      agentEvent({
+        runId,
+        lifecycleGeneration: oldGeneration,
+        sessionKey: "agent:retained:main",
+        sessionId: "session-retained",
+        agentId: "retained",
+      }),
+    );
+    for (let index = 0; index < 1_025; index += 1) {
+      recorder.record(
+        agentEvent({
+          runId: `terminal-pressure-${index}`,
+          lifecycleGeneration: oldGeneration,
+          data: { phase: "end" },
+        }),
+      );
+    }
+    recorder.record(
+      agentEvent({
+        runId,
+        lifecycleGeneration: undefined,
+        seq: 2,
+        sessionKey: undefined,
+        sessionId: undefined,
+        agentId: undefined,
+        data: { phase: "end" },
+      }),
+    );
+    rotateAgentEventLifecycleGeneration();
+    recorder.record(
+      agentEvent({
+        runId,
+        lifecycleGeneration: oldGeneration,
+        seq: 3,
+        sessionKey: undefined,
+        sessionId: undefined,
+        agentId: undefined,
+        data: { phase: "end" },
+      }),
+    );
+    await recorder.stop();
+
+    expect(
+      inputs.find(
+        (input) =>
+          input.kind === "agent_run" &&
+          input.action === "agent.run.finished" &&
+          input.runId === runId &&
+          input.sourceSequence === 3,
+      ),
+    ).toMatchObject({
+      actorId: "retained",
+      agentId: "retained",
+      sessionKey: "agent:retained:main",
+      sessionId: "session-retained",
+    });
+    expect(
+      inputs.some(
+        (input) =>
+          input.kind === "agent_run" &&
+          input.action === "agent.run.finished" &&
+          input.runId === runId &&
+          input.sourceSequence === 2,
+      ),
+    ).toBe(false);
   });
 
   it("does not let a duplicate old-generation start reactivate provenance", async () => {

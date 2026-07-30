@@ -21,7 +21,7 @@ type AuditWriterMessage =
 export type AuditEventWriter = {
   ready: Promise<void>;
   record: (input: AuditEventInput) => boolean;
-  stop: () => Promise<void>;
+  stop: (finalInputs?: readonly AuditEventInput[]) => Promise<void>;
 };
 
 function resolveAuditEventWriterUrl(currentModuleUrl = import.meta.url): URL {
@@ -157,13 +157,27 @@ export function createAuditEventWriter(
         return false;
       }
     },
-    stop: async () => {
+    stop: async (finalInputs = []) => {
       if (stopped) {
         return;
       }
       stopped = true;
       if (unavailable) {
         return;
+      }
+      for (const input of finalInputs) {
+        pending += 1;
+        try {
+          // Shutdown records bypass the live queue cap but retain worker message
+          // ordering, so the following stop drains them before exit.
+          // oxlint-disable-next-line unicorn/require-post-message-target-origin
+          worker.postMessage({ type: "record", input });
+        } catch (error) {
+          pending -= 1;
+          unavailable = true;
+          fail(error);
+          return;
+        }
       }
       await new Promise<void>((resolve) => {
         resolveStop = resolve;

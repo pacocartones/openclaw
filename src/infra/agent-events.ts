@@ -7,6 +7,7 @@ import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { notifyListeners, registerListener } from "../shared/listeners.js";
 import { createAbortError } from "./abort-signal.js";
 import { hasInvalidLifecycleStartTimestamp } from "./agent-event-lifecycle.js";
+import { retireAgentRunContext } from "./agent-run-context-retirement.js";
 import { clearAgentRunUsage, resetAgentRunUsageForTest } from "./agent-run-usage.js";
 
 /** Approval event phase for request/resolution transitions. */
@@ -405,6 +406,9 @@ export function claimAgentRunContext(
     );
     return claimId;
   }
+  if (existing) {
+    retireAgentRunContext(runId, existing.lifecycleGeneration, "replaced");
+  }
   state.runContextById.set(runId, createAgentRunContext(context, lifecycleGeneration));
   state.seqByRun.delete(runId);
   clearAgentRunUsage(runId);
@@ -557,6 +561,9 @@ export function clearAgentRunContext(
   state.runContextById.delete(runId);
   state.seqByRun.delete(runId);
   clearAgentRunUsage(runId, lifecycleGeneration ?? existing?.lifecycleGeneration);
+  if (existing) {
+    retireAgentRunContext(runId, existing.lifecycleGeneration, "cleared");
+  }
 }
 
 /** Releases one tracked owner and clears its context after the final owner exits. */
@@ -601,6 +608,7 @@ export function sweepStaleRunContexts(maxAgeMs = 30 * 60 * 1000): number {
       state.seqByRun.delete(runId);
       clearAgentRunUsage(runId, ctx.lifecycleGeneration);
       getAgentRunContextOwners(state).delete(runId);
+      retireAgentRunContext(runId, ctx.lifecycleGeneration, "swept");
       swept++;
     }
   }
@@ -792,6 +800,9 @@ export function resetAgentEventsForTest(options?: { preserveListeners?: boolean 
   if (!options?.preserveListeners) {
     state.listeners.clear();
     state.auditListeners.clear();
+  }
+  for (const [runId, context] of state.runContextById) {
+    retireAgentRunContext(runId, context.lifecycleGeneration, "reset");
   }
   state.runContextById.clear();
   getAgentRunContextOwners(state).clear();

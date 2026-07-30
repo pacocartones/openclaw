@@ -14,10 +14,23 @@ import {
   isAgentEventLifecycleGenerationCurrent,
   type AgentEventPayload,
 } from "../infra/agent-events.js";
+import { onAgentRunContextRetired } from "../infra/agent-run-context-retirement.js";
 import type { TrustedToolExecutionEvent } from "../infra/diagnostic-events.js";
 import { getTrustedToolExecutionLifecycleGeneration } from "../infra/trusted-tool-execution-context.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
-import { parseAgentSessionKey } from "../routing/session-key.js";
+import {
+  buildRunInstance,
+  createAgentAuditProjectionState,
+  deriveProvenance,
+  forgetOpenRun,
+  hasAuthoritativeRunContext,
+  MAX_TRACKED_RUN_PROVENANCE,
+  rememberRunStart,
+  rememberRunTerminal,
+  resolveProvenance,
+  resolveToolProvenance,
+  type AgentAuditProjectionState,
+} from "./agent-event-audit-provenance.js";
 import type {
   AuditEventInput,
   AgentRunFinishedAuditTerminal,
@@ -25,17 +38,6 @@ import type {
 } from "./audit-event-types.js";
 import { createAuditEventWriter, type AuditEventWriter } from "./audit-event-writer.js";
 
-type RunProvenance = {
-  actorType: "agent" | "system";
-  agentId: string;
-  sessionKey?: string;
-  sessionId?: string;
-};
-
-const runProvenance = new Map<string, RunProvenance>();
-const activeRunInstanceByRunId = new Map<string, string>();
-const startedRunInstances = new Set<string>();
-const MAX_TRACKED_RUN_PROVENANCE = 1_024;
 const log = createSubsystemLogger("audit/events");
 let persistenceFailureWarned = false;
 
@@ -87,96 +89,6 @@ function auditSourceId(
   return params.lifecycleGeneration
     ? `lifecycle:${params.lifecycleGeneration}:${legacySourceId}`
     : legacySourceId;
-}
-
-function buildRunInstance(runId: string, lifecycleGeneration?: string): string {
-  return `${lifecycleGeneration ?? "unknown"}\0${runId}`;
-}
-
-function trimRunProvenance(): void {
-  while (runProvenance.size > MAX_TRACKED_RUN_PROVENANCE) {
-    const oldestRunInstance = runProvenance.keys().next().value;
-    if (oldestRunInstance === undefined) {
-      break;
-    }
-    runProvenance.delete(oldestRunInstance);
-    startedRunInstances.delete(oldestRunInstance);
-    for (const [trackedRunId, activeRunInstance] of activeRunInstanceByRunId) {
-      if (activeRunInstance === oldestRunInstance) {
-        activeRunInstanceByRunId.delete(trackedRunId);
-      }
-    }
-  }
-}
-
-function rememberRunStart(
-  runInstance: string,
-  runId: string,
-  provenance: RunProvenance,
-  hasLifecycleGeneration: boolean,
-): void {
-  const startAlreadySeen = startedRunInstances.has(runInstance);
-  runProvenance.delete(runInstance);
-  runProvenance.set(runInstance, provenance);
-  startedRunInstances.add(runInstance);
-  const activeRunInstance = activeRunInstanceByRunId.get(runId);
-  const canReplaceActive =
-    hasLifecycleGeneration || !activeRunInstance || activeRunInstance === runInstance;
-  if (
-    canReplaceActive &&
-    (!activeRunInstance || activeRunInstance === runInstance || !startAlreadySeen)
-  ) {
-    activeRunInstanceByRunId.delete(runId);
-    activeRunInstanceByRunId.set(runId, runInstance);
-  }
-  trimRunProvenance();
-}
-
-function rememberRunTerminal(runInstance: string, runId: string, provenance: RunProvenance): void {
-  const remembered = runProvenance.get(runInstance) ?? provenance;
-  runProvenance.delete(runInstance);
-  runProvenance.set(runInstance, remembered);
-  const activeRunInstance = activeRunInstanceByRunId.get(runId);
-  if (!activeRunInstance || activeRunInstance === runInstance) {
-    activeRunInstanceByRunId.set(runId, runInstance);
-  }
-  trimRunProvenance();
-}
-
-function deriveProvenance(event: {
-  agentId?: unknown;
-  sessionKey?: unknown;
-  sessionId?: unknown;
-}): RunProvenance {
-  const sessionKey = nonEmptyString(event.sessionKey);
-  const sessionId = nonEmptyString(event.sessionId);
-  const eventAgentId = nonEmptyString(event.agentId);
-  const sessionAgentId = sessionKey ? parseAgentSessionKey(sessionKey)?.agentId : undefined;
-  const agentId = eventAgentId ?? sessionAgentId ?? "unknown";
-  const actorType = eventAgentId || sessionAgentId ? "agent" : "system";
-  return { actorType, agentId, sessionKey, sessionId };
-}
-
-function resolveProvenance(
-  runInstance: string,
-  event: { agentId?: unknown; sessionKey?: unknown; sessionId?: unknown },
-): RunProvenance {
-  return runProvenance.get(runInstance) ?? deriveProvenance(event);
-}
-
-function resolveToolProvenance(
-  runId: string,
-  event: TrustedToolExecutionEvent,
-  lifecycleGeneration?: string,
-) {
-  const runInstance = lifecycleGeneration
-    ? buildRunInstance(runId, lifecycleGeneration)
-    : (activeRunInstanceByRunId.get(runId) ?? buildRunInstance(runId));
-  const observed = resolveProvenance(runInstance, event);
-  const remembered = runProvenance.get(runInstance);
-  // Lifecycle start owns canonical run identity. Once remembered, tool
-  // diagnostics cannot fill unknown fields or replace the admitted principal.
-  return remembered ?? observed;
 }
 
 function classifyRunTerminal(
@@ -237,7 +149,10 @@ type AgentAuditProjection = {
   terminal?: { outcome: AgentRunTerminalOutcome; phase: "end" | "error" };
 };
 
-function projectAgentEvent(event: AgentEventPayload): AgentAuditProjection | undefined {
+function projectAgentEvent(
+  state: AgentAuditProjectionState,
+  event: AgentEventPayload,
+): AgentAuditProjection | undefined {
   const runId = nonEmptyString(event.runId);
   const phase = nonEmptyString(event.data.phase);
   if (!runId || !phase) {
@@ -249,7 +164,7 @@ function projectAgentEvent(event: AgentEventPayload): AgentAuditProjection | und
   if (
     event.lifecycleGeneration &&
     !isAgentEventLifecycleGenerationCurrent(event.lifecycleGeneration) &&
-    !(isLifecycleTerminal && startedRunInstances.has(runInstance))
+    !(isLifecycleTerminal && state.openRunProvenance.has(runInstance))
   ) {
     // Stale starts cannot replace admission. A tracked pre-rotation run may
     // still close its exact instance; rememberRunTerminal keeps the newer
@@ -257,8 +172,15 @@ function projectAgentEvent(event: AgentEventPayload): AgentAuditProjection | und
     return undefined;
   }
   if (event.stream === "lifecycle" && phase === "start") {
-    const provenance = deriveProvenance(event);
-    rememberRunStart(runInstance, runId, provenance, event.lifecycleGeneration !== undefined);
+    // Retry starts may reopen a completed instance. rememberRunStart reuses its
+    // admitted provenance so replayed identity fields cannot replace authority.
+    const provenance = rememberRunStart(
+      state,
+      runInstance,
+      runId,
+      deriveProvenance(event),
+      event.lifecycleGeneration !== undefined,
+    );
     const occurredAt = asDateTimestampMs(event.data.startedAt) ?? event.ts;
     const action = "agent.run.started" as const;
     return {
@@ -285,20 +207,20 @@ function projectAgentEvent(event: AgentEventPayload): AgentAuditProjection | und
     };
   }
   if (isLifecycleTerminal) {
-    const activeRunInstance = activeRunInstanceByRunId.get(runId);
+    const activeRunInstance = state.activeRunInstanceByRunId.get(runId);
     if (
       !event.lifecycleGeneration &&
       activeRunInstance &&
       activeRunInstance !== runInstance &&
-      !startedRunInstances.has(runInstance)
+      !state.openRunProvenance.has(runInstance)
     ) {
       // Gateway lifecycle emitters always stamp a generation. A legacy
       // terminal cannot be safely attached to a generated admission, so reject
       // it unless a generation-less start established its own run instance.
       return undefined;
     }
-    const provenance = resolveProvenance(runInstance, event);
-    rememberRunTerminal(runInstance, runId, provenance);
+    const provenance = resolveProvenance(state, runInstance, event);
+    rememberRunTerminal(state, runInstance, runId, provenance);
     const { outcome, ...terminal } = classifyRunTerminal(event.data, phase);
     const occurredAt = asDateTimestampMs(event.data.endedAt) ?? event.ts;
     const action = "agent.run.finished" as const;
@@ -331,6 +253,7 @@ function projectAgentEvent(event: AgentEventPayload): AgentAuditProjection | und
 
 /** Project the complete trusted tool-execution lifecycle without private diagnostic content. */
 function projectToolExecutionEventToAudit(
+  state: AgentAuditProjectionState,
   event: TrustedToolExecutionEvent,
 ): ToolActionAuditEventInput | undefined {
   // Schema quarantine describes tool availability before invocation. Without
@@ -349,7 +272,7 @@ function projectToolExecutionEventToAudit(
   }
   const toolCallId = auditToolCallId(event.toolCallId);
   const lifecycleGeneration = getTrustedToolExecutionLifecycleGeneration(event);
-  const provenance = resolveToolProvenance(runId, event, lifecycleGeneration);
+  const provenance = resolveToolProvenance(state, runId, event, lifecycleGeneration);
   const occurredAt = asDateTimestampMs(event.sourceTimestampMs) ?? event.ts;
   const attribution = {
     sourceSequence: event.seq,
@@ -433,6 +356,7 @@ export function createAgentEventAuditRecorder(options?: {
   stateDir?: string;
   terminalSettleMs?: number;
 }): AgentEventAuditRecorder {
+  const projectionState = createAgentAuditProjectionState();
   const writer =
     options?.writer ??
     createAuditEventWriter({
@@ -444,8 +368,11 @@ export function createAgentEventAuditRecorder(options?: {
         }
       },
     });
-  type PendingTerminal = NonNullable<AgentAuditProjection["terminal"]> & {
+  type TerminalCandidate = NonNullable<AgentAuditProjection["terminal"]> & {
+    attemptKey: string;
     input: AuditEventInput;
+  };
+  type PendingTerminal = TerminalCandidate & {
     timer: ReturnType<typeof setTimeout>;
   };
   const terminalSettleMs = Math.max(
@@ -453,9 +380,64 @@ export function createAgentEventAuditRecorder(options?: {
     Math.floor(options?.terminalSettleMs ?? AGENT_RUN_TERMINAL_RETRY_GRACE_MS),
   );
   const pendingTerminals = new Map<string, PendingTerminal>();
+  const rejectedTerminalsByAttempt = new Map<string, TerminalCandidate & { runInstance: string }>();
+  const rejectedCountByRunInstance = new Map<string, number>();
   const openRunInstances = new Set<string>();
+  const retiredOpenRunInstances = new Set<string>();
+  const unownedOpenRunInstances = new Set<string>();
   const settledRunInstances = new Set<string>();
+  const attemptEpochByRunInstance = new Map<string, number>();
 
+  const selectTerminalCandidate = (
+    existing: TerminalCandidate,
+    incoming: TerminalCandidate,
+  ): TerminalCandidate => {
+    // A bare cleanup end can follow a definitive error without a retry start.
+    // Otherwise use the shared sticky timeout/cancellation merge contract.
+    const cleanupAfterError =
+      existing.phase === "error" &&
+      incoming.phase === "end" &&
+      incoming.outcome.reason === "completed";
+    if (cleanupAfterError) {
+      return existing;
+    }
+    const merged = mergeAgentRunTerminalOutcome(existing.outcome, incoming.outcome);
+    return merged === existing.outcome ? existing : incoming;
+  };
+  const forgetRejectedAttempt = (attemptKey: string) => {
+    const rejected = rejectedTerminalsByAttempt.get(attemptKey);
+    if (!rejected) {
+      return;
+    }
+    rejectedTerminalsByAttempt.delete(attemptKey);
+    const rejectedCount = (rejectedCountByRunInstance.get(rejected.runInstance) ?? 1) - 1;
+    if (rejectedCount > 0) {
+      rejectedCountByRunInstance.set(rejected.runInstance, rejectedCount);
+    } else {
+      rejectedCountByRunInstance.delete(rejected.runInstance);
+      if (!openRunInstances.has(rejected.runInstance)) {
+        attemptEpochByRunInstance.delete(rejected.runInstance);
+      }
+    }
+  };
+  const rememberRejectedTerminal = (runInstance: string, incoming: TerminalCandidate) => {
+    const existing = rejectedTerminalsByAttempt.get(incoming.attemptKey);
+    const selected = existing ? selectTerminalCandidate(existing, incoming) : incoming;
+    if (!existing) {
+      rejectedCountByRunInstance.set(
+        runInstance,
+        (rejectedCountByRunInstance.get(runInstance) ?? 0) + 1,
+      );
+    }
+    rejectedTerminalsByAttempt.delete(incoming.attemptKey);
+    rejectedTerminalsByAttempt.set(incoming.attemptKey, { ...selected, runInstance });
+    if (rejectedTerminalsByAttempt.size > MAX_TRACKED_RUN_PROVENANCE) {
+      const oldest = rejectedTerminalsByAttempt.keys().next().value;
+      if (oldest !== undefined) {
+        forgetRejectedAttempt(oldest);
+      }
+    }
+  };
   const rememberSettled = (runInstance: string) => {
     settledRunInstances.delete(runInstance);
     settledRunInstances.add(runInstance);
@@ -481,26 +463,28 @@ export function createAgentEventAuditRecorder(options?: {
     }
     clearPending(runInstance);
     openRunInstances.delete(runInstance);
-    if (writer.record(pending.input)) {
+    const rejected = rejectedTerminalsByAttempt.get(pending.attemptKey);
+    const selected = rejected ? selectTerminalCandidate(rejected, pending) : pending;
+    if (writer.record(selected.input)) {
+      forgetRejectedAttempt(selected.attemptKey);
+      const runId = nonEmptyString(pending.input.runId);
+      if (runId) {
+        forgetOpenRun(projectionState, runInstance, runId);
+      }
+      retiredOpenRunInstances.delete(runInstance);
+      unownedOpenRunInstances.delete(runInstance);
       rememberSettled(runInstance);
+      if (!rejectedCountByRunInstance.has(runInstance)) {
+        attemptEpochByRunInstance.delete(runInstance);
+      }
+    } else {
+      rememberRejectedTerminal(runInstance, selected);
     }
   };
-  const scheduleTerminal = (runInstance: string, incoming: Omit<PendingTerminal, "timer">) => {
+  const scheduleTerminal = (runInstance: string, incoming: TerminalCandidate) => {
     const existing = pendingTerminals.get(runInstance);
-    let selected = incoming;
+    const selected = existing ? selectTerminalCandidate(existing, incoming) : incoming;
     if (existing) {
-      // A bare cleanup end can follow a definitive error without a retry start.
-      // Otherwise use the shared sticky timeout/cancellation merge contract.
-      const cleanupAfterError =
-        existing.phase === "error" &&
-        incoming.phase === "end" &&
-        incoming.outcome.reason === "completed";
-      if (cleanupAfterError) {
-        selected = existing;
-      } else {
-        const merged = mergeAgentRunTerminalOutcome(existing.outcome, incoming.outcome);
-        selected = merged === existing.outcome ? existing : incoming;
-      }
       clearTimeout(existing.timer);
     }
     const timer = setTimeout(() => flushPending(runInstance), terminalSettleMs);
@@ -514,10 +498,57 @@ export function createAgentEventAuditRecorder(options?: {
       }
     }
   };
+  const unsubscribeRunContextRetirement = onAgentRunContextRetired(
+    ({ runId, lifecycleGeneration, reason }) => {
+      const runInstance = buildRunInstance(runId, lifecycleGeneration);
+      if (reason === "replaced" && projectionState.openRunProvenance.has(runInstance)) {
+        retiredOpenRunInstances.delete(runInstance);
+        retiredOpenRunInstances.add(runInstance);
+        unownedOpenRunInstances.delete(runInstance);
+        if (retiredOpenRunInstances.size > MAX_TRACKED_RUN_PROVENANCE) {
+          const oldest = retiredOpenRunInstances.values().next().value;
+          if (oldest !== undefined) {
+            const separator = oldest.indexOf("\0");
+            const retiredRunId = separator >= 0 ? oldest.slice(separator + 1) : oldest;
+            retiredOpenRunInstances.delete(oldest);
+            forgetOpenRun(projectionState, oldest, retiredRunId);
+            openRunInstances.delete(oldest);
+            if (!pendingTerminals.has(oldest) && !rejectedCountByRunInstance.has(oldest)) {
+              attemptEpochByRunInstance.delete(oldest);
+            }
+          }
+        }
+        return;
+      }
+      forgetOpenRun(projectionState, runInstance, runId);
+      openRunInstances.delete(runInstance);
+      retiredOpenRunInstances.delete(runInstance);
+      unownedOpenRunInstances.delete(runInstance);
+      if (!pendingTerminals.has(runInstance) && !rejectedCountByRunInstance.has(runInstance)) {
+        attemptEpochByRunInstance.delete(runInstance);
+      }
+    },
+  );
+  const trimUnownedOpenRuns = () => {
+    while (unownedOpenRunInstances.size > MAX_TRACKED_RUN_PROVENANCE) {
+      const runInstance = unownedOpenRunInstances.values().next().value;
+      if (runInstance === undefined) {
+        break;
+      }
+      const separator = runInstance.indexOf("\0");
+      const runId = separator >= 0 ? runInstance.slice(separator + 1) : runInstance;
+      unownedOpenRunInstances.delete(runInstance);
+      forgetOpenRun(projectionState, runInstance, runId);
+      openRunInstances.delete(runInstance);
+      if (!pendingTerminals.has(runInstance) && !rejectedCountByRunInstance.has(runInstance)) {
+        attemptEpochByRunInstance.delete(runInstance);
+      }
+    }
+  };
 
   return {
     record: (event) => {
-      const projection = projectAgentEvent(event);
+      const projection = projectAgentEvent(projectionState, event);
       if (!projection) {
         return;
       }
@@ -530,9 +561,21 @@ export function createAgentEventAuditRecorder(options?: {
           return;
         }
         // Retry starts cancel a provisional terminal for the same logical run.
-        // Keep the original start so one run cannot acquire unmatched starts.
+        // A writer-rejected terminal already crossed the settle boundary and
+        // remains a prior attempt; queue pressure must not rewrite that history.
+        attemptEpochByRunInstance.set(
+          runInstance,
+          (attemptEpochByRunInstance.get(runInstance) ?? 0) + 1,
+        );
         openRunInstances.add(runInstance);
         writer.record(projection.input);
+        if (hasAuthoritativeRunContext(runInstance, event.runId)) {
+          unownedOpenRunInstances.delete(runInstance);
+        } else {
+          unownedOpenRunInstances.delete(runInstance);
+          unownedOpenRunInstances.add(runInstance);
+        }
+        trimUnownedOpenRuns();
         return;
       }
       if (settledRunInstances.has(runInstance)) {
@@ -542,16 +585,37 @@ export function createAgentEventAuditRecorder(options?: {
         projection.terminal.outcome.reason === "completed" &&
         !pendingTerminals.has(runInstance)
       ) {
+        const attemptKey = `${runInstance}\0${attemptEpochByRunInstance.get(runInstance) ?? 0}`;
+        const incoming = {
+          attemptKey,
+          input: projection.input,
+          ...projection.terminal,
+        };
+        const rejected = rejectedTerminalsByAttempt.get(attemptKey);
+        const selected = rejected ? selectTerminalCandidate(rejected, incoming) : incoming;
         openRunInstances.delete(runInstance);
-        if (writer.record(projection.input)) {
+        if (writer.record(selected.input)) {
+          forgetRejectedAttempt(attemptKey);
+          forgetOpenRun(projectionState, runInstance, event.runId);
+          retiredOpenRunInstances.delete(runInstance);
+          unownedOpenRunInstances.delete(runInstance);
           rememberSettled(runInstance);
+          if (!rejectedCountByRunInstance.has(runInstance)) {
+            attemptEpochByRunInstance.delete(runInstance);
+          }
+        } else {
+          rememberRejectedTerminal(runInstance, selected);
         }
         return;
       }
-      scheduleTerminal(runInstance, { input: projection.input, ...projection.terminal });
+      scheduleTerminal(runInstance, {
+        attemptKey: `${runInstance}\0${attemptEpochByRunInstance.get(runInstance) ?? 0}`,
+        input: projection.input,
+        ...projection.terminal,
+      });
     },
     recordTool: (event) => {
-      const input = projectToolExecutionEventToAudit(event);
+      const input = projectToolExecutionEventToAudit(projectionState, event);
       if (input) {
         writer.record(input);
       }
@@ -560,7 +624,24 @@ export function createAgentEventAuditRecorder(options?: {
       for (const runInstance of pendingTerminals.keys()) {
         flushPending(runInstance);
       }
-      await writer.stop();
+      try {
+        await writer.stop(
+          [...rejectedTerminalsByAttempt.values()].map((rejected) => rejected.input),
+        );
+      } finally {
+        unsubscribeRunContextRetirement();
+        // Admission state is lifecycle-owned, not an LRU cache. Context
+        // retirement handles abandoned runs while shutdown releases the rest.
+        projectionState.openRunProvenance.clear();
+        projectionState.runProvenance.clear();
+        projectionState.activeRunInstanceByRunId.clear();
+        projectionState.seenRunInstances.clear();
+        rejectedTerminalsByAttempt.clear();
+        rejectedCountByRunInstance.clear();
+        retiredOpenRunInstances.clear();
+        unownedOpenRunInstances.clear();
+        attemptEpochByRunInstance.clear();
+      }
     },
   };
 }
