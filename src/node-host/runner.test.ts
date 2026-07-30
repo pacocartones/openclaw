@@ -11,7 +11,7 @@ const mocks = vi.hoisted(() => ({
   capturedGatewayClientOptions: [] as GatewayClientOptions[],
   capturedConfiguredGatewayConfigs: [] as Array<{ contextPath?: string }>,
   capturedGatewayClients: [] as Array<{
-    request: ReturnType<typeof vi.fn>;
+    request: ReturnType<typeof vi.fn<(method: string, params?: unknown) => Promise<unknown>>>;
     stop: ReturnType<typeof vi.fn>;
     updateNodeManifest: ReturnType<typeof vi.fn>;
   }>,
@@ -67,7 +67,7 @@ vi.mock("../gateway/client-start-readiness.js", () => ({
 }));
 
 vi.mock("../gateway/client.js", () => ({
-  GatewayClientRequestError: class GatewayClientRequestError extends Error {
+  GatewayClientRequestError: class MockGatewayClientRequestError extends Error {
     readonly gatewayCode: string;
 
     constructor(params: { code: string; message: string }) {
@@ -77,7 +77,7 @@ vi.mock("../gateway/client.js", () => ({
   },
   GatewayClient: function GatewayClient(opts: GatewayClientOptions) {
     const client = {
-      request: vi.fn(async () => ({})),
+      request: vi.fn<(method: string, params?: unknown) => Promise<unknown>>(async () => ({})),
       stop: vi.fn(),
       updateNodeManifest: vi.fn(),
     };

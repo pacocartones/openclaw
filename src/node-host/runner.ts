@@ -268,7 +268,7 @@ export async function runNodeHost(opts: NodeHostRunOptions): Promise<void> {
           dispatch(mode);
         }
       })
-      .catch((error) => {
+      .catch((error: unknown) => {
         writeStderrLine(`node host invoke event dispatch failed: ${String(error)}`);
       });
   };
