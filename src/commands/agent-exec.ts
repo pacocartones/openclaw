@@ -57,9 +57,14 @@ export type AgentExecEnvelope = {
   final: string;
   payloads: AgentExecPayload[];
   usage?: NonNullable<NonNullable<EmbeddedAgentRunMeta["agentMeta"]>["usage"]>;
+  lastCallUsage?: NonNullable<NonNullable<EmbeddedAgentRunMeta["agentMeta"]>["lastCallUsage"]>;
   costUsd?: number;
   codeModeEngaged?: boolean;
   assistantTurns?: number;
+  providerAttemptCount?: number;
+  providerRetryCount?: number;
+  firstProviderAttemptSucceeded?: boolean;
+  fallbackUsed?: boolean;
   bridgeCalls?: NonNullable<NonNullable<EmbeddedAgentRunMeta["agentMeta"]>["bridgeCalls"]>;
   toolSummary?: NonNullable<EmbeddedAgentRunMeta["toolSummary"]>;
   model: string | null;
@@ -232,18 +237,30 @@ export function classifyAgentExecResult(
               ? "agent_error"
               : undefined;
   const agentMeta = meta.agentMeta;
+  const providerAttempts = meta.executionTrace?.attempts ?? [];
   return {
     ok: status === "ok",
     status,
     final: finalTextFromResult(result, payloads, !hasErrorPayload),
     payloads,
     ...(agentMeta?.usage ? { usage: agentMeta.usage } : {}),
+    ...(agentMeta?.lastCallUsage ? { lastCallUsage: agentMeta.lastCallUsage } : {}),
     ...(agentMeta?.costUsd !== undefined ? { costUsd: agentMeta.costUsd } : {}),
     ...(agentMeta?.codeModeEngaged !== undefined
       ? { codeModeEngaged: agentMeta.codeModeEngaged }
       : {}),
     ...(agentMeta?.assistantTurns !== undefined
       ? { assistantTurns: agentMeta.assistantTurns }
+      : {}),
+    ...(providerAttempts.length > 0
+      ? {
+          providerAttemptCount: providerAttempts.length,
+          providerRetryCount: Math.max(0, providerAttempts.length - 1),
+          firstProviderAttemptSucceeded: providerAttempts[0]?.result === "success",
+        }
+      : {}),
+    ...(meta.executionTrace?.fallbackUsed !== undefined
+      ? { fallbackUsed: meta.executionTrace.fallbackUsed }
       : {}),
     ...(agentMeta?.bridgeCalls ? { bridgeCalls: agentMeta.bridgeCalls } : {}),
     ...(meta.toolSummary ? { toolSummary: meta.toolSummary } : {}),

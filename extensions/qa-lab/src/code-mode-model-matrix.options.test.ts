@@ -10,9 +10,89 @@ import {
   reserveCodeModeMatrixOutputDir,
   resolveCodeModeMatrixCellRuntimePaths,
   resolveCodeModeMatrixOutputDir,
+  summarizeCodeModeMatrixResults,
+  type CodeModeMatrixCellResult,
 } from "../../../scripts/code-mode-model-matrix.ts";
 
 describe("Code Mode model matrix options", () => {
+  it("separates input-output, last-call, cache, and retry metrics", () => {
+    const result = (overrides: Partial<CodeModeMatrixCellResult>): CodeModeMatrixCellResult => ({
+      assistantTurns: 2,
+      bridgeCalls: { search: 0, describe: 0, call: 1, sequence: ["read"] },
+      buildSha256: "build123",
+      codeModeEngaged: true,
+      elapsedMs: 100,
+      executionTransport: "bridge",
+      expected: "CM-EXPECTED",
+      failureCategory: null,
+      fallbackUsed: false,
+      final: "CM-EXPECTED",
+      firstProviderAttemptSucceeded: true,
+      gitSha: "abc123",
+      id: "cell",
+      lastCallUsage: { input: 100, output: 10, total: 110 },
+      mode: "code",
+      model: "ollama/qwen3.5:9b",
+      observedModel: "qwen3.5:9b",
+      observedProvider: "ollama",
+      oracle: {
+        answer: true,
+        effect: true,
+        engagement: true,
+        identity: true,
+        toolExecution: true,
+      },
+      passed: true,
+      providerAttemptCount: 1,
+      providerRetryCount: 0,
+      repetition: 1,
+      sourceDirty: false,
+      sourcePatchSha256: null,
+      startupMs: 40,
+      status: "ok",
+      task: "read",
+      timestamp: "2026-07-30T00:00:00.000Z",
+      toolSummary: { calls: 1, tools: ["exec"] },
+      usage: { input: 100, output: 10, total: 110 },
+      ...overrides,
+    });
+    const [group] = summarizeCodeModeMatrixResults([
+      result({ id: "cell-1" }),
+      result({
+        assistantTurns: 4,
+        elapsedMs: 300,
+        failureCategory: "answer_mismatch",
+        id: "cell-2",
+        lastCallUsage: { input: 200, output: 20, total: 220 },
+        passed: false,
+        repetition: 2,
+        usage: { input: 200, output: 20, cacheRead: 80, total: 300 },
+      }),
+    ]);
+
+    expect(group).toMatchObject({
+      metrics: {
+        all: {
+          assistantTurns: { captured: 2, p50: 4, total: 6 },
+          cacheReadReported: { captured: 2, p50: 1, total: 1 },
+          cacheReadTokens: { captured: 1, p50: 80, total: 80 },
+          cacheWriteReported: { captured: 2, p50: 0, total: 0 },
+          firstProviderAttemptSucceeded: { captured: 2, p50: 1, total: 2 },
+          inputOutputTokens: { captured: 2, p50: 220, total: 330 },
+          lastCallTotalTokens: { captured: 2, p50: 220, total: 330 },
+          providerAttempts: { captured: 2, p50: 1, total: 2 },
+          providerRetries: { captured: 2, p50: 0, total: 0 },
+          wallMs: { captured: 2, p50: 300, total: 400 },
+        },
+        passed: {
+          cacheReadReported: { captured: 1, p50: 0, total: 0 },
+          inputOutputTokens: { captured: 1, p50: 110, total: 110 },
+          lastCallTotalTokens: { captured: 1, p50: 110, total: 110 },
+        },
+      },
+    });
+  });
+
   it("defaults to the complete bounded matrix", () => {
     expect(parseCodeModeMatrixOptions(["--model", "ollama/qwen3.5:9b"], "/repo")).toMatchObject({
       models: ["ollama/qwen3.5:9b"],

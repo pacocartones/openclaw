@@ -5,9 +5,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   classifyCodeModeMatrixCell,
-  resolveCodeModeMatrixExecutionTransport,
   runCodeModeModelMatrix,
-  summarizeCodeModeMatrixResults,
   validateQaEvidenceSummaryJson,
   type CodeModeMatrixCellResult,
 } from "../../../scripts/code-mode-model-matrix.ts";
@@ -335,56 +333,6 @@ describe("Code Mode model matrix classification", () => {
     ).toBeNull();
   });
 
-  it("classifies bridge, native, mixed, and empty execution transports", () => {
-    expect(resolveCodeModeMatrixExecutionTransport(successEnvelope)).toBe("bridge");
-    expect(
-      resolveCodeModeMatrixExecutionTransport({
-        ...successEnvelope,
-        bridgeCalls: undefined,
-        toolSummary: { calls: 1, tools: ["read"], sequence: ["read"] },
-      }),
-    ).toBe("native");
-    expect(
-      resolveCodeModeMatrixExecutionTransport({
-        ...successEnvelope,
-        toolSummary: { calls: 2, tools: ["exec", "read"], sequence: ["exec", "read"] },
-      }),
-    ).toBe("mixed");
-    expect(
-      resolveCodeModeMatrixExecutionTransport({
-        ...successEnvelope,
-        bridgeCalls: undefined,
-        toolSummary: { calls: 0, tools: [] },
-      }),
-    ).toBe("none");
-  });
-
-  it("accepts a required sequence split across native and bridged calls", () => {
-    expect(
-      classifyCodeModeMatrixCell({
-        diagnostics: "",
-        effectPassed: true,
-        envelope: {
-          ...successEnvelope,
-          bridgeCalls: { search: 0, describe: 0, call: 1, sequence: ["write"] },
-          toolSummary: {
-            calls: 3,
-            tools: ["read", "exec"],
-            sequence: ["read", "exec", "read"],
-          },
-        },
-        expected: "CM-EXPECTED",
-        mode: "code",
-        model: "ollama/qwen3.5:9b",
-        task: "dependent-read-write",
-      }),
-    ).toMatchObject({
-      failureCategory: null,
-      oracle: { toolExecution: true },
-      passed: true,
-    });
-  });
-
   it("rejects ambiguous mixed ordering across multiple bridge boundaries", () => {
     expect(
       classifyCodeModeMatrixCell({
@@ -554,81 +502,57 @@ describe("Code Mode model matrix classification", () => {
 });
 
 describe("Code Mode model matrix artifacts", () => {
-  it("aggregates successful performance separately and keeps missing cache metrics unreported", () => {
-    const result = (overrides: Partial<CodeModeMatrixCellResult>): CodeModeMatrixCellResult => ({
-      assistantTurns: 2,
-      bridgeCalls: { search: 0, describe: 0, call: 1, sequence: ["read"] },
-      buildSha256: "build123",
-      codeModeEngaged: true,
-      elapsedMs: 100,
-      executionTransport: "bridge",
-      expected: "CM-EXPECTED",
-      failureCategory: null,
-      final: "CM-EXPECTED",
-      gitSha: "abc123",
-      id: "cell",
-      mode: "code",
-      model: "ollama/qwen3.5:9b",
-      observedModel: "qwen3.5:9b",
-      observedProvider: "ollama",
-      oracle: {
-        answer: true,
-        effect: true,
-        engagement: true,
-        identity: true,
-        toolExecution: true,
-      },
-      passed: true,
-      repetition: 1,
-      sourceDirty: false,
-      sourcePatchSha256: null,
-      startupMs: 40,
-      status: "ok",
-      task: "read",
-      timestamp: "2026-07-30T00:00:00.000Z",
-      toolSummary: { calls: 1, tools: ["exec"] },
-      usage: { input: 100, output: 10, total: 110 },
-      ...overrides,
-    });
-    const [group] = summarizeCodeModeMatrixResults([
-      result({ id: "cell-1" }),
-      result({
-        assistantTurns: 4,
-        bridgeCalls: { search: 0, describe: 0, call: 3, sequence: ["read", "read"] },
-        elapsedMs: 300,
-        failureCategory: "answer_mismatch",
-        id: "cell-2",
-        passed: false,
-        repetition: 2,
-        usage: { input: 200, output: 20, cacheRead: 80, total: 300 },
-      }),
-    ]);
+  it("keeps repetitions contiguous within each model, mode, and task cohort", async () => {
+    const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-code-mode-order-test-"));
+    try {
+      const result = await runCodeModeModelMatrix(
+        {
+          allowFailures: false,
+          dryRun: true,
+          keepState: false,
+          models: ["ollama/first", "ollama/second"],
+          modes: ["direct", "code"],
+          outputDir: "artifacts",
+          repetitions: 2,
+          repoRoot,
+          tasks: ["read", "edit-readback"],
+          thinking: "off",
+          timeoutSeconds: 10,
+        },
+        {
+          readSourceIdentity: async () => ({
+            gitSha: "abc123",
+            sourceDirty: false,
+            sourcePatchSha256: null,
+          }),
+        },
+      );
 
-    expect(group).toMatchObject({
-      metrics: {
-        all: {
-          assistantTurns: { captured: 2, p50: 4, total: 6 },
-          tokenVolume: { captured: 2, p50: 220, total: 330 },
-          cacheReadTokens: { captured: 1, p50: 80, total: 80 },
-          cacheMetricsReported: { captured: 2, p50: 1, total: 1 },
-          bridgeTransportCells: { captured: 2, p50: 1, total: 2 },
-          mixedTransportCells: { captured: 2, p50: 0, total: 0 },
-          nativeTransportCells: { captured: 2, p50: 0, total: 0 },
-          postDispatchProcessMs: { captured: 2, p50: 260, total: 320 },
-          reportedLastTurnTotalTokens: { captured: 2, p50: 300, total: 410 },
-          startupMs: { captured: 2, p50: 40, total: 80 },
-          wallMs: { captured: 2, p50: 300, total: 400 },
-        },
-        passed: {
-          assistantTurns: { captured: 1, p50: 2, total: 2 },
-          tokenVolume: { captured: 1, p50: 110, total: 110 },
-          cacheReadTokens: { captured: 0, p50: null, total: 0 },
-          cacheMetricsReported: { captured: 1, p50: 0, total: 0 },
-          postDispatchProcessMs: { captured: 1, p50: 60, total: 60 },
-          wallMs: { captured: 1, p50: 100, total: 100 },
-        },
-      },
-    });
+      expect(result.exitCode).toBe(0);
+      const manifest = JSON.parse(
+        await fs.readFile(path.join(repoRoot, "artifacts", "manifest.json"), "utf8"),
+      ) as { cells: string[] };
+      expect(manifest.cells).toEqual([
+        "ollama-first-de6aa7a784-direct-read-1",
+        "ollama-first-de6aa7a784-direct-read-2",
+        "ollama-first-de6aa7a784-direct-edit-readback-1",
+        "ollama-first-de6aa7a784-direct-edit-readback-2",
+        "ollama-first-de6aa7a784-code-read-1",
+        "ollama-first-de6aa7a784-code-read-2",
+        "ollama-first-de6aa7a784-code-edit-readback-1",
+        "ollama-first-de6aa7a784-code-edit-readback-2",
+        "ollama-second-18cc17809a-direct-read-1",
+        "ollama-second-18cc17809a-direct-read-2",
+        "ollama-second-18cc17809a-direct-edit-readback-1",
+        "ollama-second-18cc17809a-direct-edit-readback-2",
+        "ollama-second-18cc17809a-code-read-1",
+        "ollama-second-18cc17809a-code-read-2",
+        "ollama-second-18cc17809a-code-edit-readback-1",
+        "ollama-second-18cc17809a-code-edit-readback-2",
+      ]);
+    } finally {
+      await fs.rm(repoRoot, { force: true, recursive: true });
+    }
   });
 
   it("builds and records identity from an external product checkout", async () => {
@@ -970,7 +894,7 @@ describe("Code Mode model matrix artifacts", () => {
           total: number;
           firstRepetitionPassed: number;
           anyRepetitionPassed: number;
-          cleanPassed: number;
+          toolFailureFreePassed: number;
         };
         groups: Array<{
           firstRepetitionPassed: boolean;
@@ -982,7 +906,7 @@ describe("Code Mode model matrix artifacts", () => {
         total: 1,
         firstRepetitionPassed: 0,
         anyRepetitionPassed: 1,
-        cleanPassed: 0,
+        toolFailureFreePassed: 0,
       });
       expect(summary.groups).toMatchObject([
         { firstRepetitionPassed: false, anyRepetitionPassed: true },

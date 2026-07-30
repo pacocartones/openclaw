@@ -9,7 +9,9 @@ export type UsageAccumulator = {
   input: number;
   output: number;
   cacheRead: number;
+  cacheReadReported: boolean;
   cacheWrite: number;
+  cacheWriteReported: boolean;
   reasoningTokens: number;
   total: number;
   /**
@@ -39,7 +41,9 @@ export const createUsageAccumulator = (): UsageAccumulator => ({
   input: 0,
   output: 0,
   cacheRead: 0,
+  cacheReadReported: false,
   cacheWrite: 0,
+  cacheWriteReported: false,
   reasoningTokens: 0,
   total: 0,
   assistantTurns: 0,
@@ -75,7 +79,9 @@ export const mergeUsageIntoAccumulator = (target: UsageAccumulator, usage: Maybe
     (usage.input ?? 0) + (usage.output ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
   target.input += usage.input ?? 0;
   target.output += usage.output ?? 0;
+  target.cacheReadReported ||= typeof usage.cacheRead === "number";
   target.cacheRead += usage.cacheRead ?? 0;
+  target.cacheWriteReported ||= typeof usage.cacheWrite === "number";
   target.cacheWrite += usage.cacheWrite ?? 0;
   target.reasoningTokens += usage.reasoningTokens ?? 0;
   target.total += callTotal;
@@ -169,8 +175,8 @@ export const toNormalizedUsage = (usage: UsageAccumulator): NormalizedUsage | un
   return {
     input: usage.input || undefined,
     output: usage.output || undefined,
-    cacheRead: usage.cacheRead || undefined,
-    cacheWrite: usage.cacheWrite || undefined,
+    cacheRead: usage.cacheReadReported ? usage.cacheRead : undefined,
+    cacheWrite: usage.cacheWriteReported ? usage.cacheWrite : undefined,
     ...(usage.reasoningTokens > 0 ? { reasoningTokens: usage.reasoningTokens } : {}),
     total: usage.total || undefined,
   };

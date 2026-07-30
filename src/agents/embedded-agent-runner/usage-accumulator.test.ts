@@ -199,5 +199,23 @@ describe("usage-accumulator", () => {
         total: 150,
       });
     });
+
+    it("preserves explicitly reported zero cache fields", () => {
+      const acc = createUsageAccumulator();
+      mergeUsageIntoAccumulator(acc, {
+        input: 100,
+        output: 50,
+        cacheRead: 0,
+        cacheWrite: 0,
+      });
+
+      expect(toNormalizedUsage(acc)).toEqual({
+        input: 100,
+        output: 50,
+        cacheRead: 0,
+        cacheWrite: 0,
+        total: 150,
+      });
+    });
   });
 });

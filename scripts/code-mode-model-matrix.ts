@@ -25,7 +25,7 @@ export { validateQaEvidenceSummaryJson };
 
 const execFileAsync = promisify(execFile);
 const SOURCE_PATH = "scripts/code-mode-model-matrix.ts";
-const MATRIX_SCHEMA_VERSION = 3;
+const MATRIX_SCHEMA_VERSION = 4;
 const DEFAULT_REPETITIONS = 3;
 const DEFAULT_TIMEOUT_SECONDS = 180;
 const MAX_REPETITIONS = 10;
@@ -64,6 +64,7 @@ type MatrixCell = {
   mode: CodeModeMatrixMode;
   model: string;
   repetition: number;
+  runOrdinal: number;
   task: CodeModeMatrixTask;
 };
 
@@ -98,6 +99,7 @@ export type CodeModeMatrixCellResult = {
   assistantTurns?: number;
   bridgeCalls?: AgentExecEnvelope["bridgeCalls"];
   buildSha256: string;
+  cacheCohort?: "initial" | "repeat";
   codeModeEngaged: boolean | null;
   costUsd?: number;
   diagnostics?: string;
@@ -107,10 +109,13 @@ export type CodeModeMatrixCellResult = {
   expected: string;
   failureCategory: CellFailureCategory | null;
   final: string;
+  fallbackUsed?: boolean;
+  firstProviderAttemptSucceeded?: boolean;
   gitSha: string;
   id: string;
   mode: CodeModeMatrixMode;
   model: string;
+  lastCallUsage?: AgentExecEnvelope["lastCallUsage"];
   observedModel: string | null;
   observedProvider: string | null;
   oracle: {
@@ -121,7 +126,10 @@ export type CodeModeMatrixCellResult = {
     toolExecution: boolean;
   };
   passed: boolean;
+  providerAttemptCount?: number;
+  providerRetryCount?: number;
   repetition: number;
+  runOrdinal?: number;
   sourceDirty: boolean;
   sourcePatchSha256: string | null;
   startupMs?: number;
@@ -632,21 +640,24 @@ export async function reserveCodeModeMatrixOutputDir(
 }
 
 function buildCells(options: CodeModeMatrixOptions): MatrixCell[] {
-  return Array.from({ length: options.repetitions }, (_, index) => index + 1).flatMap(
-    (repetition) =>
-      options.models.flatMap((model) =>
-        options.modes.flatMap((mode) =>
-          options.tasks.map((task) => {
-            return {
-              id: `${modelCellPrefix(model)}-${mode}-${task}-${repetition}`,
-              mode,
-              model,
-              repetition,
-              task,
-            };
-          }),
-        ),
+  const repetitions = Array.from({ length: options.repetitions }, (_, index) => index + 1);
+  let runOrdinal = 0;
+  return options.models.flatMap((model) =>
+    options.modes.flatMap((mode) =>
+      options.tasks.flatMap((task) =>
+        repetitions.map((repetition) => {
+          runOrdinal += 1;
+          return {
+            id: `${modelCellPrefix(model)}-${mode}-${task}-${repetition}`,
+            mode,
+            model,
+            repetition,
+            runOrdinal,
+            task,
+          };
+        }),
       ),
+    ),
   );
 }
 
@@ -862,6 +873,33 @@ function containsOrderedToolSequence(
   return expected.length === 0;
 }
 
+function removeBridgeTargetsFromOuterSequence(
+  outer: readonly string[] | undefined,
+  bridge: readonly string[] | undefined,
+): string[] {
+  const observed = [...(outer ?? [])];
+  if (!bridge?.length) {
+    return observed;
+  }
+  for (let boundaryIndex = observed.length - 1; boundaryIndex >= 0; boundaryIndex -= 1) {
+    const boundary = observed[boundaryIndex];
+    if (boundary !== "exec" && boundary !== "wait") {
+      continue;
+    }
+    const bridgeStart = boundaryIndex - bridge.length;
+    if (bridgeStart < 0) {
+      continue;
+    }
+    const matchesBoundary = bridge.every(
+      (bridgeTarget, index) => observed[bridgeStart + index] === bridgeTarget,
+    );
+    if (matchesBoundary) {
+      return [...observed.slice(0, bridgeStart), ...observed.slice(boundaryIndex)];
+    }
+  }
+  return observed;
+}
+
 function containsMixedToolSequence(
   outer: readonly string[] | undefined,
   bridge: readonly string[] | undefined,
@@ -870,11 +908,16 @@ function containsMixedToolSequence(
   if (!outer || !bridge) {
     return false;
   }
-  const bridgeBoundaries = outer.filter((name) => name === "exec" || name === "wait").length;
+  const normalizedOuter = removeBridgeTargetsFromOuterSequence(outer, bridge);
+  const bridgeBoundaries = normalizedOuter.filter(
+    (name) => name === "exec" || name === "wait",
+  ).length;
   if (bridgeBoundaries !== 1) {
     return false;
   }
-  const observed = outer.flatMap((name) => (name === "exec" || name === "wait" ? bridge : [name]));
+  const observed = normalizedOuter.flatMap((name) =>
+    name === "exec" || name === "wait" ? bridge : [name],
+  );
   return containsOrderedToolSequence(observed, expected);
 }
 
@@ -924,8 +967,11 @@ export function resolveCodeModeMatrixExecutionTransport(
   envelope: Readonly<AgentExecEnvelope>,
 ): CodeModeMatrixExecutionTransport {
   const hasBridge = (envelope.bridgeCalls?.call ?? 0) > 0;
-  const hasNative =
-    envelope.toolSummary?.sequence?.some((name) => name !== "exec" && name !== "wait") ?? false;
+  const normalizedOuter = removeBridgeTargetsFromOuterSequence(
+    envelope.toolSummary?.sequence,
+    envelope.bridgeCalls?.sequence,
+  );
+  const hasNative = normalizedOuter.some((name) => name !== "exec" && name !== "wait");
   if (hasBridge && hasNative) {
     return "mixed";
   }
@@ -967,12 +1013,22 @@ export function classifyCodeModeMatrixCell(params: {
   const requiredSequences = requiredNestedSequences(params.task);
   const codeSurfaceEngaged =
     params.mode === "code" || (params.mode === "auto" && params.envelope.codeModeEngaged === true);
+  const normalizedOuterSequence = removeBridgeTargetsFromOuterSequence(
+    params.envelope.toolSummary?.sequence,
+    params.envelope.bridgeCalls?.sequence,
+  );
+  const hasBridgeCalls = (params.envelope.bridgeCalls?.call ?? 0) > 0;
+  const hasBridgeBoundary =
+    params.envelope.toolSummary?.sequence?.some((name) => name === "exec" || name === "wait") ??
+    false;
   // Auto cells follow the surface that actually engaged. Both surfaces must
   // prove the ordered sequence so a correct final value cannot hide skipped
   // verification or a mutation performed through the wrong tool.
-  const nativeToolExecution = requiredSequences.some((required) =>
-    containsOrderedToolSequence(params.envelope.toolSummary?.sequence, required),
-  );
+  const nativeToolExecution =
+    (!hasBridgeCalls || hasBridgeBoundary) &&
+    requiredSequences.some((required) =>
+      containsOrderedToolSequence(normalizedOuterSequence, required),
+    );
   const bridgeToolExecution =
     (params.envelope.toolSummary?.tools ?? []).includes("exec") &&
     requiredSequences.some((required) =>
@@ -1387,6 +1443,7 @@ async function runMatrixCell(params: RunCellParams): Promise<CodeModeMatrixCellR
       : {}),
     ...(command.envelope.bridgeCalls ? { bridgeCalls: command.envelope.bridgeCalls } : {}),
     buildSha256: params.buildSha256,
+    cacheCohort: params.cell.repetition === 1 ? "initial" : "repeat",
     codeModeEngaged: command.envelope.codeModeEngaged ?? null,
     ...(command.envelope.costUsd !== undefined ? { costUsd: command.envelope.costUsd } : {}),
     ...(diagnosticText ? { diagnostics: diagnosticText } : {}),
@@ -1396,15 +1453,29 @@ async function runMatrixCell(params: RunCellParams): Promise<CodeModeMatrixCellR
     expected: fixture.expected,
     failureCategory: classification.failureCategory,
     final: command.envelope.final,
+    ...(command.envelope.fallbackUsed !== undefined
+      ? { fallbackUsed: command.envelope.fallbackUsed }
+      : {}),
+    ...(command.envelope.firstProviderAttemptSucceeded !== undefined
+      ? { firstProviderAttemptSucceeded: command.envelope.firstProviderAttemptSucceeded }
+      : {}),
     gitSha: params.gitSha,
     id: params.cell.id,
     mode: params.cell.mode,
     model: params.cell.model,
+    ...(command.envelope.lastCallUsage ? { lastCallUsage: command.envelope.lastCallUsage } : {}),
     observedModel: command.envelope.model,
     observedProvider: command.envelope.provider,
     oracle: classification.oracle,
     passed: classification.passed,
+    ...(command.envelope.providerAttemptCount !== undefined
+      ? { providerAttemptCount: command.envelope.providerAttemptCount }
+      : {}),
+    ...(command.envelope.providerRetryCount !== undefined
+      ? { providerRetryCount: command.envelope.providerRetryCount }
+      : {}),
     repetition: params.cell.repetition,
+    runOrdinal: params.cell.runOrdinal,
     sourceDirty: params.sourceDirty,
     sourcePatchSha256: params.sourcePatchSha256,
     ...(startupMs !== undefined ? { startupMs: Math.min(startupMs, elapsedMs) } : {}),
@@ -1435,6 +1506,7 @@ function harnessFailureResult(
   );
   return {
     buildSha256: provenance.buildSha256,
+    cacheCohort: cell.repetition === 1 ? "initial" : "repeat",
     codeModeEngaged: null,
     diagnostics: message,
     elapsedMs,
@@ -1458,6 +1530,7 @@ function harnessFailureResult(
     },
     passed: false,
     repetition: cell.repetition,
+    runOrdinal: cell.runOrdinal,
     sourceDirty: provenance.sourceDirty,
     sourcePatchSha256: provenance.sourcePatchSha256,
     status: "error",
@@ -1507,7 +1580,7 @@ function summarizeNumbers(values: Array<number | undefined>): NumericSummary {
 function summarizePerformance(results: CodeModeMatrixCellResult[]) {
   const metric = (select: (result: CodeModeMatrixCellResult) => number | undefined) =>
     summarizeNumbers(results.map(select));
-  const tokenVolume = (result: CodeModeMatrixCellResult): number | undefined => {
+  const inputOutputTokens = (result: CodeModeMatrixCellResult): number | undefined => {
     const capturedUsage = result.usage;
     if (!capturedUsage) {
       return undefined;
@@ -1522,26 +1595,35 @@ function summarizePerformance(results: CodeModeMatrixCellResult[]) {
     }),
     bridgeToolCalls: metric((result) => result.bridgeCalls?.call),
     cacheReadTokens: metric((result) => result.usage?.cacheRead),
-    cacheMetricsReported: metric((result) =>
-      result.usage &&
-      (Object.hasOwn(result.usage, "cacheRead") || Object.hasOwn(result.usage, "cacheWrite"))
-        ? 1
-        : 0,
+    cacheReadReported: metric((result) =>
+      result.usage && Object.hasOwn(result.usage, "cacheRead") ? 1 : 0,
     ),
     cacheWriteTokens: metric((result) => result.usage?.cacheWrite),
+    cacheWriteReported: metric((result) =>
+      result.usage && Object.hasOwn(result.usage, "cacheWrite") ? 1 : 0,
+    ),
     bridgeTransportCells: metric((result) => (result.executionTransport === "bridge" ? 1 : 0)),
     costUsd: metric((result) => result.costUsd),
+    fallbackUsedCells: metric((result) =>
+      result.fallbackUsed === undefined ? undefined : result.fallbackUsed ? 1 : 0,
+    ),
+    firstProviderAttemptSucceeded: metric((result) =>
+      result.firstProviderAttemptSucceeded === undefined
+        ? undefined
+        : result.firstProviderAttemptSucceeded
+          ? 1
+          : 0,
+    ),
+    inputOutputTokens: metric(inputOutputTokens),
     inputTokens: metric((result) => result.usage?.input),
+    lastCallTotalTokens: metric((result) => result.lastCallUsage?.total),
     mixedTransportCells: metric((result) => (result.executionTransport === "mixed" ? 1 : 0)),
     nativeTransportCells: metric((result) => (result.executionTransport === "native" ? 1 : 0)),
-    postDispatchProcessMs: metric((result) =>
-      result.startupMs === undefined ? undefined : Math.max(0, result.elapsedMs - result.startupMs),
-    ),
     outerToolCalls: metric((result) => result.toolSummary?.calls),
     outputTokens: metric((result) => result.usage?.output),
-    reportedLastTurnTotalTokens: metric((result) => result.usage?.total),
+    providerAttempts: metric((result) => result.providerAttemptCount),
+    providerRetries: metric((result) => result.providerRetryCount),
     startupMs: metric((result) => result.startupMs),
-    tokenVolume: metric(tokenVolume),
     toolFailures: metric((result) => result.toolSummary?.failures),
     wallMs: metric((result) => result.elapsedMs),
   };
@@ -1552,7 +1634,7 @@ export function summarizeCodeModeMatrixResults(results: CodeModeMatrixCellResult
     string,
     {
       codeModeEngaged: number;
-      cleanPassed: number;
+      toolFailureFreePassed: number;
       failed: number;
       failures: Record<string, number>;
       firstRepetitionPassed: boolean;
@@ -1566,7 +1648,7 @@ export function summarizeCodeModeMatrixResults(results: CodeModeMatrixCellResult
     const key = `${result.model}\0${result.mode}\0${result.task}`;
     const group = groups.get(key) ?? {
       codeModeEngaged: 0,
-      cleanPassed: 0,
+      toolFailureFreePassed: 0,
       failed: 0,
       failures: {},
       firstRepetitionPassed: false,
@@ -1581,7 +1663,7 @@ export function summarizeCodeModeMatrixResults(results: CodeModeMatrixCellResult
     if (result.passed) {
       group.passed += 1;
       if ((result.toolSummary?.failures ?? 0) === 0) {
-        group.cleanPassed += 1;
+        group.toolFailureFreePassed += 1;
       }
       if (result.repetition === 1) {
         group.firstRepetitionPassed = true;
@@ -1601,8 +1683,8 @@ export function summarizeCodeModeMatrixResults(results: CodeModeMatrixCellResult
     const sortedWallMs = group.wallMs.toSorted((a, b) => a - b);
     return {
       codeModeEngaged: group.codeModeEngaged,
-      cleanPassRate: group.total === 0 ? 0 : group.cleanPassed / group.total,
-      cleanPassed: group.cleanPassed,
+      toolFailureFreePassRate: group.total === 0 ? 0 : group.toolFailureFreePassed / group.total,
+      toolFailureFreePassed: group.toolFailureFreePassed,
       failed: group.failed,
       failures: group.failures,
       firstRepetitionPassed: group.firstRepetitionPassed,
@@ -1851,7 +1933,9 @@ export async function runCodeModeModelMatrix(
     const failed = results.filter((result) => !result.passed).length;
     const firstRepetitionPassed = groups.filter((group) => group.firstRepetitionPassed).length;
     const anyRepetitionPassed = groups.filter((group) => group.anyRepetitionPassed).length;
-    const cleanPassed = groups.filter((group) => group.cleanPassRate === 1).length;
+    const toolFailureFreePassed = groups.filter(
+      (group) => group.toolFailureFreePassRate === 1,
+    ).length;
     const summary = {
       schemaVersion: MATRIX_SCHEMA_VERSION,
       finishedAt: new Date().toISOString(),
@@ -1866,7 +1950,12 @@ export async function runCodeModeModelMatrix(
         total: groups.length,
         firstRepetitionPassed,
         anyRepetitionPassed,
-        cleanPassed,
+        toolFailureFreePassed,
+      },
+      cacheComparison: {
+        ordering: "model-mode-task groups run contiguously",
+        cohorts: "repetition 1 is initial; later repetitions are repeat observations",
+        interpretation: "provider-reported observational telemetry, not a cache guarantee",
       },
       groups,
     };
