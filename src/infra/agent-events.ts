@@ -741,7 +741,24 @@ export function emitAgentAuditEvent(event: Omit<AgentEventPayload, "seq" | "ts">
   const state = getAgentEventState();
   const enriched = enrichAgentEvent(event);
   if (enriched) {
-    notifyListeners(state.auditListeners, enriched);
+    const attribution = state.runContextById.get(event.runId)?.attribution;
+    const matchingAttribution =
+      attribution?.lifecycleGeneration === enriched.lifecycleGeneration ? attribution : undefined;
+    const auditEvent = matchingAttribution
+      ? {
+          ...enriched,
+          sessionKey: matchingAttribution.sessionKey,
+          sessionId: matchingAttribution.sessionId,
+          agentId: matchingAttribution.agentId,
+        }
+      : enriched;
+    if (enriched.lifecycleGeneration) {
+      Object.defineProperty(auditEvent, "lifecycleGeneration", {
+        value: enriched.lifecycleGeneration,
+        enumerable: false,
+      });
+    }
+    notifyListeners(state.auditListeners, auditEvent);
     const phase = event.stream === "lifecycle" ? event.data.phase : undefined;
     if ((phase === "end" || phase === "error") && !state.runContextById.has(event.runId)) {
       // Private synthetic runs bypass public terminal cleanup. Release sequence state only

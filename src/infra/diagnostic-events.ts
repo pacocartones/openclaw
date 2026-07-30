@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { EmbeddedAgentExecutionPhase } from "../agents/embedded-agent-runner/execution-phase.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { TalkBrain, TalkEventType, TalkMode, TalkTransport } from "../talk/talk-events.js";
+import { captureAgentRunLifecycleGeneration } from "./agent-events.js";
 import { setInternalDiagnosticEventListenerCounts } from "./diagnostic-event-listener-presence.js";
 import {
   formatDiagnosticTraceparent,
@@ -900,6 +901,7 @@ export type TrustedToolExecutionEvent = Extract<
 >;
 
 type TrustedToolExecutionEventListener = (event: TrustedToolExecutionEvent) => void;
+const trustedToolExecutionLifecycleGeneration = new WeakMap<TrustedToolExecutionEvent, string>();
 
 type QueuedDiagnosticEvent = {
   event: DiagnosticEventPayload;
@@ -1324,6 +1326,12 @@ function dispatchTrustedToolExecutionEvent(
     );
     return;
   }
+  if (typeof event.runId === "string" && event.runId.length > 0) {
+    trustedToolExecutionLifecycleGeneration.set(
+      enriched,
+      captureAgentRunLifecycleGeneration(event.runId),
+    );
+  }
   for (const listener of state.toolExecutionListeners) {
     try {
       listener(enriched);
@@ -1333,6 +1341,13 @@ function dispatchTrustedToolExecutionEvent(
       );
     }
   }
+}
+
+/** Returns private run ownership captured when a trusted tool event was emitted. */
+export function getTrustedToolExecutionLifecycleGeneration(
+  event: TrustedToolExecutionEvent,
+): string | undefined {
+  return trustedToolExecutionLifecycleGeneration.get(event);
 }
 
 /** Emits an untrusted diagnostic event from external/plugin-facing code. */

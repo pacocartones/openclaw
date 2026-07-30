@@ -10,8 +10,14 @@ import {
 } from "../agents/agent-run-terminal-outcome.js";
 import { normalizeAgentRunTimeoutPhase } from "../agents/run-timeout-attribution.js";
 import { isAllowedToolCallName } from "../agents/tool-call-shared.js";
-import type { AgentEventPayload } from "../infra/agent-events.js";
-import type { TrustedToolExecutionEvent } from "../infra/diagnostic-events.js";
+import {
+  isAgentEventLifecycleGenerationCurrent,
+  type AgentEventPayload,
+} from "../infra/agent-events.js";
+import {
+  getTrustedToolExecutionLifecycleGeneration,
+  type TrustedToolExecutionEvent,
+} from "../infra/diagnostic-events.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { parseAgentSessionKey } from "../routing/session-key.js";
 import type {
@@ -21,10 +27,16 @@ import type {
 } from "./audit-event-types.js";
 import { createAuditEventWriter, type AuditEventWriter } from "./audit-event-writer.js";
 
-const runProvenance = new Map<
-  string,
-  { actorType: "agent" | "system"; agentId: string; sessionKey?: string; sessionId?: string }
->();
+type RunProvenance = {
+  actorType: "agent" | "system";
+  agentId: string;
+  sessionKey?: string;
+  sessionId?: string;
+};
+
+const runProvenance = new Map<string, RunProvenance>();
+const activeRunInstanceByRunId = new Map<string, string>();
+const startedRunInstances = new Set<string>();
 const MAX_TRACKED_RUN_PROVENANCE = 1_024;
 const log = createSubsystemLogger("audit/events");
 let persistenceFailureWarned = false;
@@ -70,56 +82,91 @@ function legacyAuditSourceId(params: {
   return `${params.runId}:${params.sourceSequence}:${params.occurredAt}:${params.action}`;
 }
 
-function rememberRunProvenance(
-  runId: string,
-  provenance: {
-    actorType: "agent" | "system";
-    agentId: string;
-    sessionKey?: string;
-    sessionId?: string;
-  },
-): void {
-  runProvenance.delete(runId);
-  runProvenance.set(runId, provenance);
+function buildRunInstance(runId: string, lifecycleGeneration?: string): string {
+  return `${lifecycleGeneration ?? "unknown"}\0${runId}`;
+}
+
+function trimRunProvenance(): void {
   while (runProvenance.size > MAX_TRACKED_RUN_PROVENANCE) {
-    const oldestRunId = runProvenance.keys().next().value;
-    if (oldestRunId === undefined) {
+    const oldestRunInstance = runProvenance.keys().next().value;
+    if (oldestRunInstance === undefined) {
       break;
     }
-    runProvenance.delete(oldestRunId);
+    runProvenance.delete(oldestRunInstance);
+    startedRunInstances.delete(oldestRunInstance);
+    for (const [trackedRunId, activeRunInstance] of activeRunInstanceByRunId) {
+      if (activeRunInstance === oldestRunInstance) {
+        activeRunInstanceByRunId.delete(trackedRunId);
+      }
+    }
   }
 }
 
-function resolveProvenance(
+function rememberRunStart(
+  runInstance: string,
   runId: string,
-  event: { agentId?: unknown; sessionKey?: unknown; sessionId?: unknown },
-) {
-  const remembered = runProvenance.get(runId);
-  const sessionKey = nonEmptyString(event.sessionKey) ?? remembered?.sessionKey;
-  const sessionId = nonEmptyString(event.sessionId) ?? remembered?.sessionId;
+  provenance: RunProvenance,
+  hasLifecycleGeneration: boolean,
+): void {
+  const startAlreadySeen = startedRunInstances.has(runInstance);
+  runProvenance.delete(runInstance);
+  runProvenance.set(runInstance, provenance);
+  startedRunInstances.add(runInstance);
+  const activeRunInstance = activeRunInstanceByRunId.get(runId);
+  const canReplaceActive =
+    hasLifecycleGeneration || !activeRunInstance || activeRunInstance === runInstance;
+  if (
+    canReplaceActive &&
+    (!activeRunInstance || activeRunInstance === runInstance || !startAlreadySeen)
+  ) {
+    activeRunInstanceByRunId.delete(runId);
+    activeRunInstanceByRunId.set(runId, runInstance);
+  }
+  trimRunProvenance();
+}
+
+function rememberRunTerminal(runInstance: string, runId: string, provenance: RunProvenance): void {
+  const remembered = runProvenance.get(runInstance) ?? provenance;
+  runProvenance.delete(runInstance);
+  runProvenance.set(runInstance, remembered);
+  const activeRunInstance = activeRunInstanceByRunId.get(runId);
+  if (!activeRunInstance || activeRunInstance === runInstance) {
+    activeRunInstanceByRunId.set(runId, runInstance);
+  }
+  trimRunProvenance();
+}
+
+function deriveProvenance(event: {
+  agentId?: unknown;
+  sessionKey?: unknown;
+  sessionId?: unknown;
+}): RunProvenance {
+  const sessionKey = nonEmptyString(event.sessionKey);
+  const sessionId = nonEmptyString(event.sessionId);
   const eventAgentId = nonEmptyString(event.agentId);
   const sessionAgentId = sessionKey ? parseAgentSessionKey(sessionKey)?.agentId : undefined;
-  const agentId = eventAgentId ?? sessionAgentId ?? remembered?.agentId ?? "unknown";
-  const actorType = eventAgentId || sessionAgentId ? "agent" : (remembered?.actorType ?? "system");
+  const agentId = eventAgentId ?? sessionAgentId ?? "unknown";
+  const actorType = eventAgentId || sessionAgentId ? "agent" : "system";
   return { actorType, agentId, sessionKey, sessionId };
 }
 
-function resolveToolProvenance(
-  runId: string,
+function resolveProvenance(
+  runInstance: string,
   event: { agentId?: unknown; sessionKey?: unknown; sessionId?: unknown },
-) {
-  const observed = resolveProvenance(runId, event);
-  const remembered = runProvenance.get(runId);
-  if (!remembered) {
-    return observed;
-  }
-  // Tool diagnostics may use an execution sandbox key. Lifecycle start owns
-  // the canonical run identity; tool metadata only fills missing session fields.
-  return {
-    ...remembered,
-    sessionKey: remembered.sessionKey ?? observed.sessionKey,
-    sessionId: remembered.sessionId ?? observed.sessionId,
-  };
+): RunProvenance {
+  return runProvenance.get(runInstance) ?? deriveProvenance(event);
+}
+
+function resolveToolProvenance(runId: string, event: TrustedToolExecutionEvent) {
+  const lifecycleGeneration = getTrustedToolExecutionLifecycleGeneration(event);
+  const runInstance = lifecycleGeneration
+    ? buildRunInstance(runId, lifecycleGeneration)
+    : (activeRunInstanceByRunId.get(runId) ?? buildRunInstance(runId));
+  const observed = resolveProvenance(runInstance, event);
+  const remembered = runProvenance.get(runInstance);
+  // Lifecycle start owns canonical run identity. Once remembered, tool
+  // diagnostics cannot fill unknown fields or replace the admitted principal.
+  return remembered ?? observed;
 }
 
 function classifyRunTerminal(
@@ -186,9 +233,18 @@ function projectAgentEvent(event: AgentEventPayload): AgentAuditProjection | und
   if (!runId || !phase) {
     return undefined;
   }
-  const provenance = resolveProvenance(runId, event);
+  if (
+    event.lifecycleGeneration &&
+    !isAgentEventLifecycleGenerationCurrent(event.lifecycleGeneration)
+  ) {
+    // The live emitter rejects stale generations before this boundary. Keep
+    // the recorder defensive so replayed/late events cannot replace admission.
+    return undefined;
+  }
+  const runInstance = buildRunInstance(runId, event.lifecycleGeneration);
   if (event.stream === "lifecycle" && phase === "start") {
-    rememberRunProvenance(runId, provenance);
+    const provenance = deriveProvenance(event);
+    rememberRunStart(runInstance, runId, provenance, event.lifecycleGeneration !== undefined);
     const occurredAt = asDateTimestampMs(event.data.startedAt) ?? event.ts;
     const action = "agent.run.started" as const;
     return {
@@ -214,7 +270,8 @@ function projectAgentEvent(event: AgentEventPayload): AgentAuditProjection | und
     };
   }
   if (event.stream === "lifecycle" && (phase === "end" || phase === "error")) {
-    rememberRunProvenance(runId, provenance);
+    const provenance = resolveProvenance(runInstance, event);
+    rememberRunTerminal(runInstance, runId, provenance);
     const { outcome, ...terminal } = classifyRunTerminal(event.data, phase);
     const occurredAt = asDateTimestampMs(event.data.endedAt) ?? event.ts;
     const action = "agent.run.finished" as const;
@@ -433,7 +490,7 @@ export function createAgentEventAuditRecorder(options?: {
       if (!projection) {
         return;
       }
-      const runInstance = `${event.lifecycleGeneration ?? "unknown"}\0${event.runId}`;
+      const runInstance = buildRunInstance(event.runId, event.lifecycleGeneration);
       if (!projection.terminal) {
         const alreadyOpen = openRunInstances.has(runInstance);
         clearPending(runInstance);

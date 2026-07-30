@@ -830,6 +830,78 @@ describe("agent-events sequencing", () => {
     expect(JSON.stringify(received)).not.toContain("attribution");
   });
 
+  test("projects admission attribution only onto private audit events", () => {
+    const attribution = createAgentExecutionAttribution({
+      runId: "run-audit-attribution",
+      lifecycleGeneration: getAgentEventLifecycleGeneration(),
+      sessionKey: "agent:main:admitted",
+      sessionId: "session-admitted",
+      agentId: "main",
+    });
+    registerAgentRunContext(attribution.runId, {
+      attribution,
+      lifecycleGeneration: attribution.lifecycleGeneration,
+    });
+    let received: AgentEventPayload | undefined;
+    const stop = onAgentAuditEvent((event) => {
+      received = event;
+    });
+
+    emitAgentAuditEvent({
+      runId: attribution.runId,
+      stream: "lifecycle",
+      data: { phase: "start", startedAt: 1_000 },
+      sessionKey: "agent:forged:event",
+      sessionId: "session-forged",
+      agentId: "forged",
+    });
+    stop();
+
+    expect(received).toMatchObject({
+      runId: attribution.runId,
+      sessionKey: attribution.sessionKey,
+      sessionId: attribution.sessionId,
+      agentId: attribution.agentId,
+    });
+    expect(received).not.toHaveProperty("attribution");
+    expect(JSON.stringify(received)).not.toContain("lifecycleGeneration");
+  });
+
+  test("does not project attribution across lifecycle generations", () => {
+    const attribution = createAgentExecutionAttribution({
+      runId: "run-stale-attribution",
+      lifecycleGeneration: "generation-old",
+      sessionKey: "agent:main:admitted",
+      sessionId: "session-admitted",
+      agentId: "main",
+    });
+    registerAgentRunContext(attribution.runId, {
+      attribution,
+      lifecycleGeneration: getAgentEventLifecycleGeneration(),
+    });
+    let received: AgentEventPayload | undefined;
+    const stop = onAgentAuditEvent((event) => {
+      received = event;
+    });
+
+    emitAgentAuditEvent({
+      runId: attribution.runId,
+      stream: "lifecycle",
+      data: { phase: "start", startedAt: 1_000 },
+      sessionKey: "agent:new:event",
+      sessionId: "session-new",
+      agentId: "new",
+    });
+    stop();
+
+    expect(received).toMatchObject({
+      runId: attribution.runId,
+      sessionKey: "agent:new:event",
+      sessionId: "session-new",
+      agentId: "new",
+    });
+  });
+
   test("falls back to registered sessionKey when event sessionKey is blank", () => {
     registerAgentRunContext("run-ctx", { sessionKey: "session-main" });
 

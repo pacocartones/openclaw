@@ -1,6 +1,12 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { cleanupTempDirs, makeTempDir } from "../../test/helpers/temp-dir.js";
-import type { AgentEventPayload } from "../infra/agent-events.js";
+import {
+  getAgentEventLifecycleGeneration,
+  resetAgentEventsForTest,
+  rotateAgentEventLifecycleGeneration,
+  type AgentEventPayload,
+  withAgentRunLifecycleGeneration,
+} from "../infra/agent-events.js";
 import {
   emitTrustedDiagnosticEvent,
   onTrustedToolExecutionEvent,
@@ -112,6 +118,7 @@ function projectToolExecutionEventToAudit(
 }
 
 beforeEach(() => {
+  resetAgentEventsForTest();
   currentAuditTestRunId = `run-test-${++auditTestRunSequence}`;
 });
 
@@ -371,6 +378,433 @@ describe("agent activity audit projection", () => {
       agentId: "support",
       sessionKey: "agent:support:channel:customer",
       sessionId: "session-canonical",
+    });
+  });
+
+  it("keeps reused run ids isolated by lifecycle generation", async () => {
+    const inputs: AuditEventInput[] = [];
+    const recorder = createAgentEventAuditRecorder({
+      writer: captureAuditWriter(inputs),
+      terminalSettleMs: 0,
+    });
+    const runId = "run-reused-across-generations";
+    const firstGeneration = getAgentEventLifecycleGeneration();
+
+    recorder.record(
+      agentEvent({
+        runId,
+        lifecycleGeneration: firstGeneration,
+        sessionKey: "agent:first:main",
+        sessionId: "session-first",
+        agentId: "first",
+      }),
+    );
+    recorder.recordTool(toolEvent({ runId, seq: 2 }));
+    recorder.record(
+      agentEvent({
+        runId,
+        lifecycleGeneration: firstGeneration,
+        seq: 3,
+        data: { phase: "end" },
+      }),
+    );
+    const secondGeneration = rotateAgentEventLifecycleGeneration();
+    recorder.record(
+      agentEvent({
+        runId,
+        lifecycleGeneration: secondGeneration,
+        seq: 1,
+        sessionKey: "agent:second:main",
+        sessionId: "session-second",
+        agentId: "second",
+      }),
+    );
+    recorder.recordTool(toolEvent({ runId, seq: 2 }));
+    await recorder.stop();
+
+    expect(
+      inputs
+        .filter((input) => input.kind === "tool_action")
+        .map((input) => ({
+          actorId: input.actorId,
+          sessionKey: input.sessionKey,
+          sessionId: input.sessionId,
+        })),
+    ).toEqual([
+      {
+        actorId: "first",
+        sessionKey: "agent:first:main",
+        sessionId: "session-first",
+      },
+      {
+        actorId: "second",
+        sessionKey: "agent:second:main",
+        sessionId: "session-second",
+      },
+    ]);
+  });
+
+  it("does not let a late old-generation terminal reactivate provenance", async () => {
+    const inputs: AuditEventInput[] = [];
+    const recorder = createAgentEventAuditRecorder({
+      writer: captureAuditWriter(inputs),
+      terminalSettleMs: 60_000,
+    });
+    const runId = "run-late-old-terminal";
+    const oldGeneration = getAgentEventLifecycleGeneration();
+
+    recorder.record(
+      agentEvent({
+        runId,
+        lifecycleGeneration: oldGeneration,
+        sessionKey: "agent:old:main",
+        agentId: "old",
+      }),
+    );
+    const newGeneration = rotateAgentEventLifecycleGeneration();
+    recorder.record(
+      agentEvent({
+        runId,
+        lifecycleGeneration: newGeneration,
+        seq: 1,
+        sessionKey: "agent:new:main",
+        agentId: "new",
+      }),
+    );
+    recorder.record(
+      agentEvent({
+        runId,
+        lifecycleGeneration: oldGeneration,
+        seq: 2,
+        data: { phase: "error" },
+      }),
+    );
+    recorder.recordTool(toolEvent({ runId, seq: 2 }));
+    await recorder.stop();
+
+    expect(inputs.findLast((input) => input.kind === "tool_action")).toMatchObject({
+      actorId: "new",
+      agentId: "new",
+      sessionKey: "agent:new:main",
+    });
+  });
+
+  it("keeps delayed tool diagnostics on their originating lifecycle generation", async () => {
+    const inputs: AuditEventInput[] = [];
+    const recorder = createAgentEventAuditRecorder({
+      writer: captureAuditWriter(inputs),
+      terminalSettleMs: 60_000,
+    });
+    const runId = "run-delayed-tool-generation";
+    const oldGeneration = getAgentEventLifecycleGeneration();
+
+    recorder.record(
+      agentEvent({
+        runId,
+        lifecycleGeneration: oldGeneration,
+        sessionKey: "agent:old:main",
+        sessionId: "session-old",
+        agentId: "old",
+      }),
+    );
+    const newGeneration = rotateAgentEventLifecycleGeneration();
+    recorder.record(
+      agentEvent({
+        runId,
+        lifecycleGeneration: newGeneration,
+        sessionKey: "agent:new:main",
+        sessionId: "session-new",
+        agentId: "new",
+      }),
+    );
+    const stop = onTrustedToolExecutionEvent((event) => recorder.recordTool(event));
+    withAgentRunLifecycleGeneration(oldGeneration, () => {
+      emitTrustedDiagnosticEvent({
+        type: "tool.execution.started",
+        runId,
+        sessionKey: "agent:old:main",
+        sessionId: "session-old",
+        agentId: "old",
+        toolName: "exec",
+        toolCallId: "call-delayed-old",
+      });
+    });
+    stop();
+    await recorder.stop();
+
+    expect(inputs.findLast((input) => input.kind === "tool_action")).toMatchObject({
+      actorId: "old",
+      agentId: "old",
+      sessionKey: "agent:old:main",
+      sessionId: "session-old",
+    });
+  });
+
+  it("retains terminal provenance for delayed tools under cache pressure", async () => {
+    const inputs: AuditEventInput[] = [];
+    const recorder = createAgentEventAuditRecorder({
+      writer: captureAuditWriter(inputs),
+      terminalSettleMs: 60_000,
+    });
+    const runId = "run-terminal-retention";
+    const lifecycleGeneration = getAgentEventLifecycleGeneration();
+
+    recorder.record(
+      agentEvent({
+        runId,
+        lifecycleGeneration,
+        sessionKey: "agent:retained:main",
+        sessionId: "session-retained",
+        agentId: "retained",
+      }),
+    );
+    for (let index = 0; index < 1_023; index += 1) {
+      recorder.record(
+        agentEvent({
+          runId: `retention-pressure-${index}`,
+          lifecycleGeneration,
+        }),
+      );
+    }
+    recorder.record(
+      agentEvent({
+        runId,
+        lifecycleGeneration,
+        seq: 2,
+        data: { phase: "error" },
+      }),
+    );
+    recorder.record(
+      agentEvent({
+        runId: "retention-pressure-tail-1",
+        lifecycleGeneration,
+      }),
+    );
+    recorder.record(
+      agentEvent({
+        runId: "retention-pressure-tail-2",
+        lifecycleGeneration,
+      }),
+    );
+    const stop = onTrustedToolExecutionEvent((event) => recorder.recordTool(event));
+    withAgentRunLifecycleGeneration(lifecycleGeneration, () => {
+      emitTrustedDiagnosticEvent({
+        type: "tool.execution.started",
+        runId,
+        toolName: "exec",
+        toolCallId: "call-delayed-retained",
+      });
+    });
+    stop();
+    await recorder.stop();
+
+    expect(inputs.findLast((input) => input.kind === "tool_action")).toMatchObject({
+      actorId: "retained",
+      agentId: "retained",
+      sessionKey: "agent:retained:main",
+      sessionId: "session-retained",
+    });
+  });
+
+  it("does not let a duplicate old-generation start reactivate provenance", async () => {
+    const inputs: AuditEventInput[] = [];
+    const recorder = createAgentEventAuditRecorder({
+      writer: captureAuditWriter(inputs),
+      terminalSettleMs: 60_000,
+    });
+    const runId = "run-duplicate-old-start";
+    const oldGeneration = getAgentEventLifecycleGeneration();
+
+    recorder.record(
+      agentEvent({
+        runId,
+        lifecycleGeneration: oldGeneration,
+        sessionKey: "agent:old:main",
+        agentId: "old",
+      }),
+    );
+    const newGeneration = rotateAgentEventLifecycleGeneration();
+    recorder.record(
+      agentEvent({
+        runId,
+        lifecycleGeneration: newGeneration,
+        seq: 1,
+        sessionKey: "agent:new:main",
+        agentId: "new",
+      }),
+    );
+    recorder.record(
+      agentEvent({
+        runId,
+        lifecycleGeneration: oldGeneration,
+        seq: 2,
+        sessionKey: "agent:old:main",
+        agentId: "old",
+      }),
+    );
+    recorder.recordTool(toolEvent({ runId, seq: 2 }));
+    await recorder.stop();
+
+    expect(inputs.findLast((input) => input.kind === "tool_action")).toMatchObject({
+      actorId: "new",
+      agentId: "new",
+      sessionKey: "agent:new:main",
+    });
+  });
+
+  it("rejects an evicted old-generation start after newer admission", async () => {
+    const inputs: AuditEventInput[] = [];
+    const recorder = createAgentEventAuditRecorder({
+      writer: captureAuditWriter(inputs),
+      terminalSettleMs: 0,
+    });
+    const runId = "run-evicted-old-start";
+    const oldGeneration = getAgentEventLifecycleGeneration();
+
+    recorder.record(
+      agentEvent({
+        runId,
+        lifecycleGeneration: oldGeneration,
+        sessionKey: "agent:old:main",
+        agentId: "old",
+      }),
+    );
+    const newGeneration = rotateAgentEventLifecycleGeneration();
+    for (let index = 0; index < 1_025; index += 1) {
+      recorder.record(
+        agentEvent({
+          runId: `pressure-${index}`,
+          lifecycleGeneration: newGeneration,
+          data: { phase: "end" },
+        }),
+      );
+    }
+    recorder.record(
+      agentEvent({
+        runId,
+        lifecycleGeneration: newGeneration,
+        sessionKey: "agent:new:main",
+        agentId: "new",
+      }),
+    );
+    recorder.record(
+      agentEvent({
+        runId,
+        lifecycleGeneration: oldGeneration,
+        seq: 2,
+        sessionKey: "agent:old:main",
+        agentId: "old",
+      }),
+    );
+    recorder.recordTool(
+      toolEvent({
+        runId,
+        seq: 2,
+        sessionKey: undefined,
+        sessionId: undefined,
+        agentId: undefined,
+      }),
+    );
+    await recorder.stop();
+
+    expect(inputs.findLast((input) => input.kind === "tool_action")).toMatchObject({
+      actorId: "new",
+      agentId: "new",
+      sessionKey: "agent:new:main",
+    });
+  });
+
+  it("lets a lifecycle start replace provisional terminal provenance", async () => {
+    const inputs: AuditEventInput[] = [];
+    const recorder = createAgentEventAuditRecorder({
+      writer: captureAuditWriter(inputs),
+      terminalSettleMs: 60_000,
+    });
+    const runId = "run-terminal-before-start";
+    const oldGeneration = getAgentEventLifecycleGeneration();
+
+    recorder.record(
+      agentEvent({
+        runId,
+        lifecycleGeneration: oldGeneration,
+        sessionKey: "agent:old:main",
+        agentId: "old",
+      }),
+    );
+    const lifecycleGeneration = rotateAgentEventLifecycleGeneration();
+
+    recorder.record(
+      agentEvent({
+        runId,
+        lifecycleGeneration,
+        seq: 1,
+        sessionKey: undefined,
+        sessionId: undefined,
+        agentId: undefined,
+        data: { phase: "error" },
+      }),
+    );
+    recorder.record(
+      agentEvent({
+        runId,
+        lifecycleGeneration,
+        seq: 2,
+        sessionKey: "agent:admitted:main",
+        sessionId: "session-admitted",
+        agentId: "admitted",
+      }),
+    );
+    recorder.recordTool(toolEvent({ runId, seq: 3 }));
+    await recorder.stop();
+
+    expect(inputs.findLast((input) => input.kind === "tool_action")).toMatchObject({
+      actorId: "admitted",
+      agentId: "admitted",
+      sessionKey: "agent:admitted:main",
+      sessionId: "session-admitted",
+    });
+  });
+
+  it("does not let a generation-less start replace current admission", async () => {
+    const inputs: AuditEventInput[] = [];
+    const recorder = createAgentEventAuditRecorder({
+      writer: captureAuditWriter(inputs),
+      terminalSettleMs: 60_000,
+    });
+    const runId = "run-generationless-start";
+
+    recorder.record(
+      agentEvent({
+        runId,
+        lifecycleGeneration: getAgentEventLifecycleGeneration(),
+        sessionKey: "agent:current:main",
+        agentId: "current",
+      }),
+    );
+    recorder.record(
+      agentEvent({
+        runId,
+        lifecycleGeneration: undefined,
+        seq: 2,
+        sessionKey: "agent:legacy:main",
+        agentId: "legacy",
+      }),
+    );
+    recorder.recordTool(
+      toolEvent({
+        runId,
+        seq: 3,
+        sessionKey: undefined,
+        sessionId: undefined,
+        agentId: undefined,
+      }),
+    );
+    await recorder.stop();
+
+    expect(inputs.findLast((input) => input.kind === "tool_action")).toMatchObject({
+      actorId: "current",
+      agentId: "current",
+      sessionKey: "agent:current:main",
     });
   });
 
@@ -638,7 +1072,7 @@ describe("agent activity audit projection", () => {
       stop: async () => {},
     };
     const recorder = createAgentEventAuditRecorder({ writer });
-    const lifecycleGeneration = "gateway-1";
+    const lifecycleGeneration = getAgentEventLifecycleGeneration();
 
     recorder.record(agentEvent({ lifecycleGeneration, seq: 1 }));
     recorder.record(
@@ -668,7 +1102,7 @@ describe("agent activity audit projection", () => {
       stop: async () => {},
     };
     const recorder = createAgentEventAuditRecorder({ writer, terminalSettleMs: 60_000 });
-    const lifecycleGeneration = "gateway-retry";
+    const lifecycleGeneration = getAgentEventLifecycleGeneration();
 
     recorder.record(agentEvent({ lifecycleGeneration, seq: 1 }));
     recorder.record(agentEvent({ lifecycleGeneration, seq: 2, data: { phase: "error" } }));
