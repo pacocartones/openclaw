@@ -254,7 +254,7 @@ describe("Tool Search input schemas", () => {
   it("keeps a mutation unverified when a nested read returns an error result", async () => {
     const read = fakeTool("read", Type.Object({ path: Type.String() }));
     read.execute = vi.fn(async () => ({
-      content: [{ type: "text", text: "read failed" }],
+      content: [{ type: "text" as const, text: "read failed" }],
       details: { status: "failed", error: "read failed" },
     }));
     const write = fakeTool("write", Type.Object({ path: Type.String(), content: Type.String() }));
