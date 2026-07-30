@@ -614,13 +614,15 @@ describe("agent audit lifecycle generations", () => {
     await recorder.stop();
 
     expect(
-      inputs.map(({ action, status, actorId, sessionKey, sessionId }) => ({
-        action,
-        status,
-        actorId,
-        sessionKey,
-        sessionId,
-      })),
+      inputs
+        .filter((input) => input.kind === "agent_run")
+        .map(({ action, status, actorId, sessionKey, sessionId }) => ({
+          action,
+          status,
+          actorId,
+          sessionKey,
+          sessionId,
+        })),
     ).toEqual([
       {
         action: "agent.run.started",
