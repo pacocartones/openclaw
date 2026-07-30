@@ -6,7 +6,6 @@ Docs: https://docs.openclaw.ai
 
 ### Changes
 
-- **Web fetch request headers:** add `tools.web.fetch.headers` for validated operator routing metadata on direct `web_fetch` requests, with credential-name refusal, value-safe diagnostics, cache isolation, and guarded cross-origin redirect filtering.
 - **Control UI first-run setup:** continue verified model setup into Custodian, explain that the web app is ready without a channel, and offer an optional dismissible path to Channels.
 - **Fish Audio speech:** add hosted S2.1 synthesis with streaming, voice notes, voice discovery, and telephony, plus local Fish S2 Pro reference-voice streaming in native macOS Talk. Thanks @Conan-Scott for the earlier community-plugin implementation.
 - **Control UI cloud workspace conflicts:** surface staged-ref guidance, bounded conflicted paths, structured transcript events, and sidebar attention for cloud worker results that kept local versions.
