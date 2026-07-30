@@ -55,6 +55,8 @@ const SETTLED_TOOL_TERMINAL_CONTINUATION_INSTRUCTION =
 
 let runEmbeddedAgent: typeof import("./run.js").runEmbeddedAgent;
 
+type CodeModeMutationAttempt = Parameters<typeof requiresCodeModeMutationVerification>[0];
+
 // Cold GitHub-hosted fork runners can spend more than five minutes loading and
 // warming this broad harness before the first test reports progress.
 const COLD_FORK_RUNNER_HOOK_TIMEOUT_MS = 420_000;
@@ -2814,7 +2816,7 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
           codeModeUnverifiedMutationFileTargets: [{ path: "result.txt", expected: "unknown" }],
         },
       ],
-    };
+    } satisfies CodeModeMutationAttempt;
 
     expect(requiresCodeModeMutationVerification(base)).toBe(true);
     expect(
@@ -2912,7 +2914,7 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
           fileTarget: { path: "result.txt" },
         },
       ],
-    };
+    } satisfies CodeModeMutationAttempt;
 
     expect(requiresCodeModeMutationVerification(mutation)).toBe(false);
     expect(
@@ -2991,7 +2993,7 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
           fileTargets: [{ path: "a.ts" }, { path: "b.ts" }],
         },
       ],
-    };
+    } satisfies CodeModeMutationAttempt;
 
     expect(requiresCodeModeMutationVerification(mutation)).toBe(false);
     expect(
@@ -3057,7 +3059,7 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
           ],
         },
       ],
-    };
+    } satisfies CodeModeMutationAttempt;
 
     expect(requiresCodeModeMutationVerification(mutation)).toBe(true);
     expect(
@@ -3097,18 +3099,20 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
 
   it("uses nested Code Mode absence evidence to clear moved patch sources", () => {
     expect(
-      resolveCodeModeMutationVerificationState({
-        codeModeEngaged: true,
-        toolMetas: [
-          {
-            toolName: "exec",
-            sideEffectFree: false,
-            codeModeSuccessfulAbsenceObservationFileTargets: [{ path: "old.ts" }],
-            codeModeUnverifiedMutationFileTargets: [{ path: "new.ts", expected: "unknown" }],
-          },
-        ],
-      }),
-      { pendingTargets: [{ path: "old.ts", expected: "absent" }] },
+      resolveCodeModeMutationVerificationState(
+        {
+          codeModeEngaged: true,
+          toolMetas: [
+            {
+              toolName: "exec",
+              sideEffectFree: false,
+              codeModeSuccessfulAbsenceObservationFileTargets: [{ path: "old.ts" }],
+              codeModeUnverifiedMutationFileTargets: [{ path: "new.ts", expected: "unknown" }],
+            },
+          ],
+        },
+        { pendingTargets: [{ path: "old.ts", expected: "absent" }] },
+      ),
     ).toEqual({ pendingTargets: [{ path: "new.ts", expected: "unknown" }] });
   });
 
@@ -3124,7 +3128,7 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
           fileTarget: { path: "result.txt" },
         },
       ],
-    };
+    } satisfies CodeModeMutationAttempt;
     expect(requiresCodeModeMutationVerification(failedWrite)).toBe(true);
     expect(resolveCodeModeMutationVerificationState(failedWrite)).toEqual({
       pendingTargets: [{ path: "result.txt", expected: "unknown" }],
@@ -3180,7 +3184,7 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
     const failedTargetlessExec = {
       codeModeEngaged: true,
       toolMetas: [{ toolName: "exec", isError: true }],
-    };
+    } satisfies CodeModeMutationAttempt;
     expect(requiresCodeModeMutationVerification(failedTargetlessExec)).toBe(false);
     expect(
       requiresCodeModeMutationVerification({
