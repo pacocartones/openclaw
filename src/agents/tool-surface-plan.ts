@@ -3,7 +3,7 @@ import { getActiveAgentRingZeroTools } from "./agent-tools.ring-zero-context.js"
 import {
   applyCodeModeCatalog,
   isCodeModeEngagedForModel,
-  prefersNativeCodeModeFileTools,
+  resolveCodeModeNativeFileToolsForModel,
   resolveCodeModeConfig,
 } from "./code-mode.js";
 import {
@@ -59,7 +59,7 @@ export function resolveAgentToolSurfacePlan(params: AgentToolSurfacePlanParams) 
   const toolSearchControlsEnabled =
     toolsAvailable && !codeModeControlsEnabled && toolSearchConfig.enabled;
   const codeModeNativeFileToolsEnabled =
-    codeModeControlsEnabled && prefersNativeCodeModeFileTools(params.model);
+    codeModeControlsEnabled && resolveCodeModeNativeFileToolsForModel(params.model);
   return {
     codeModeControlsEnabled,
     codeModeNativeFileToolsEnabled,

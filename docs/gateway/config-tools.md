@@ -93,6 +93,8 @@ whose structured results cannot cross the JSON-only bridge stay direct.
 `enabled` defaults to `"auto"`, which engages code mode only for models whose
 catalog entry flags `compat.codeMode: "preferred"`. See
 [Code Mode - automatic per-model activation](/tools/code-mode#automatic-per-model-activation).
+Provider catalogs may independently set `compat.codeModeNativeFileTools` to
+keep lean local runs on the compact `exec`/`wait` bridge after activation.
 
 To opt out for every run:
 

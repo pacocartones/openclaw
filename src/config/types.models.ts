@@ -95,6 +95,11 @@ export type ModelCompatConfig = SupportedOpenAICompatFields &
     supportsTools?: boolean;
     /** Code-mode tier consumed by `tools.codeMode.enabled: "auto"`; absent means "capable". */
     codeMode?: "preferred" | "capable";
+    /**
+     * Whether engaged Code Mode may keep bounded native file tools visible for
+     * lean local runs. Defaults to true only for `codeMode: "preferred"`.
+     */
+    codeModeNativeFileTools?: boolean;
     /** Whether provider accepts prompt-cache/session affinity keys. */
     supportsPromptCacheKey?: boolean;
     /** Whether all message parts must be coerced to plain strings. */

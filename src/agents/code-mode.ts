@@ -23,9 +23,9 @@ import { describeCodeModeNamespacesForPrompt } from "./code-mode-namespaces.js";
 import {
   codeModeRuntimeTesting,
   isCodeModeEngagedForModel,
-  prefersNativeCodeModeFileTools,
   readCode,
   readRunId,
+  resolveCodeModeNativeFileToolsForModel,
   resolveCodeModeConfig,
   resolveCodeModeHeadlessConfig,
 } from "./code-mode-runtime.js";
@@ -66,7 +66,7 @@ export {
   CodeModeHeadlessAbortError,
   CodeModeHeadlessTimeoutError,
   isCodeModeEngagedForModel,
-  prefersNativeCodeModeFileTools,
+  resolveCodeModeNativeFileToolsForModel,
   runCodeModeScriptHeadless,
   resolveCodeModeConfig,
 };

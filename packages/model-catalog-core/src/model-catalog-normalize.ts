@@ -354,6 +354,7 @@ function normalizeModelCatalogCompat(value: unknown): ModelCatalogCompatConfig |
     "supportsTemperature",
     "supportsUsageInStreaming",
     "supportsTools",
+    "codeModeNativeFileTools",
     "supportsStrictMode",
     "supportsJsonSchemaResponseFormat",
     "requiresStringContent",

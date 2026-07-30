@@ -58,6 +58,7 @@ describe("model catalog normalization", () => {
                 compat: {
                   supportsTools: true,
                   codeMode: " preferred ",
+                  codeModeNativeFileTools: false,
                   openRouterRouting: {
                     only: [" anthropic ", "", 1],
                     allow_fallbacks: false,
@@ -166,6 +167,7 @@ describe("model catalog normalization", () => {
               compat: {
                 supportsTools: true,
                 codeMode: "preferred",
+                codeModeNativeFileTools: false,
                 openRouterRouting: { only: ["anthropic"], allow_fallbacks: false },
                 vercelGatewayRouting: { order: ["anthropic"] },
                 zaiToolStream: true,

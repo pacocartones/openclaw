@@ -320,6 +320,12 @@ Models without tool support cannot use code mode at all; there is no separate
 "unsupported" tier. The flag is capability metadata owned by the provider
 plugin's catalog; core only reads the generic compat field.
 
+`compat.codeModeNativeFileTools` independently controls whether lean local runs
+keep bounded native file tools visible after Code Mode engages. When omitted,
+`"preferred"` models preserve the native-file behavior. A provider can set it
+to `false` for models that perform better with all file operations behind the
+`exec`/`wait` bridge.
+
 ### Shipped preferred models
 
 Bundled provider catalogs currently flag these models as `"preferred"`:
@@ -332,12 +338,16 @@ Bundled provider catalogs currently flag these models as `"preferred"`:
 | kimi      | `k3`, `k3-256k`                                                                                                                              |
 | minimax   | `MiniMax-M3`                                                                                                                                 |
 | moonshot  | `kimi-k3`                                                                                                                                    |
+| ollama    | `devstral-small-2:24b` when `/api/show` reports both `completion` and `tools`                                                                |
 | openai    | `gpt-5.6`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.5-pro`                                                          |
 | xiaomi    | `mimo-v2.5`                                                                                                                                  |
 | zai       | `glm-5.2`, `glm-5.1`                                                                                                                         |
 
-Everything else, including all Ollama-served local models, stays unflagged and
-keeps normal tool exposure under `"auto"`.
+Everything else, including other Ollama-served local models, stays unflagged
+and keeps normal tool exposure under `"auto"`. Ollama preference is exact-tag
+and capability gated; aliases, `:latest`, alternate sizes, and custom copies do
+not inherit it. Devstral stays on the compact `exec`/`wait` bridge after
+automatic activation instead of exposing native file tools.
 
 ### Models shipped by more than one provider
 

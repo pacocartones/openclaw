@@ -215,18 +215,31 @@ export function isCodeModeEngagedForModel(
   if (config.enabled !== "auto") {
     return config.enabled;
   }
-  return prefersNativeCodeModeFileTools(model);
+  const compat =
+    model?.compat && typeof model.compat === "object"
+      ? (model.compat as { codeMode?: unknown })
+      : undefined;
+  return compat?.codeMode === "preferred";
 }
 
-/** Restricts the lean native file surface to catalog-verified Code Mode models. */
-export function prefersNativeCodeModeFileTools(model: { compat?: unknown } | undefined): boolean {
+/**
+ * Resolves the lean native file surface independently from Code Mode
+ * activation. Explicit catalog metadata wins; absent metadata preserves the
+ * historical preferred-model behavior.
+ */
+export function resolveCodeModeNativeFileToolsForModel(
+  model: { compat?: unknown } | undefined,
+): boolean {
   if (model && !supportsModelTools(model)) {
     return false;
   }
   const compat =
     model?.compat && typeof model.compat === "object"
-      ? (model.compat as { codeMode?: unknown })
+      ? (model.compat as { codeMode?: unknown; codeModeNativeFileTools?: unknown })
       : undefined;
+  if (typeof compat?.codeModeNativeFileTools === "boolean") {
+    return compat.codeModeNativeFileTools;
+  }
   return compat?.codeMode === "preferred";
 }
 
