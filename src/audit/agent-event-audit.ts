@@ -281,6 +281,18 @@ function projectAgentEvent(event: AgentEventPayload): AgentAuditProjection | und
     };
   }
   if (event.stream === "lifecycle" && (phase === "end" || phase === "error")) {
+    const activeRunInstance = activeRunInstanceByRunId.get(runId);
+    if (
+      !event.lifecycleGeneration &&
+      activeRunInstance &&
+      activeRunInstance !== runInstance &&
+      !startedRunInstances.has(runInstance)
+    ) {
+      // Gateway lifecycle emitters always stamp a generation. A legacy
+      // terminal cannot be safely attached to a generated admission, so reject
+      // it unless a generation-less start established its own run instance.
+      return undefined;
+    }
     const provenance = resolveProvenance(runInstance, event);
     rememberRunTerminal(runInstance, runId, provenance);
     const { outcome, ...terminal } = classifyRunTerminal(event.data, phase);

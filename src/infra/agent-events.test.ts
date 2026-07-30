@@ -863,6 +863,7 @@ describe("agent-events sequencing", () => {
       sessionId: attribution.sessionId,
       agentId: attribution.agentId,
     });
+    expect(received?.lifecycleGeneration).toBe(getAgentEventLifecycleGeneration());
     expect(received).not.toHaveProperty("attribution");
     expect(JSON.stringify(received)).not.toContain("lifecycleGeneration");
   });
