@@ -1,6 +1,6 @@
 import type { HookContext } from "./agent-tools.before-tool-call.types.js";
 
-export type ToolExecutionCorrelation = Readonly<{
+type ToolExecutionCorrelation = Readonly<{
   agentId?: string;
   sessionKey?: string;
   sessionId?: string;
