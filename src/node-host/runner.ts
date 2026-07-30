@@ -4,6 +4,7 @@ import {
   GATEWAY_CLIENT_NAMES,
 } from "../../packages/gateway-protocol/src/client-info.js";
 import { ConnectErrorDetailCodes } from "../../packages/gateway-protocol/src/connect-error-details.js";
+import { NODE_INVOKE_SESSION_KEY_ENVELOPE_PROTOCOL_FEATURE } from "../../packages/gateway-protocol/src/schema/nodes.js";
 import { getRuntimeConfig, type OpenClawConfig } from "../config/config.js";
 import { startGatewayClientWhenEventLoopReady } from "../gateway/client-start-readiness.js";
 import {
@@ -124,6 +125,35 @@ function isUnsupportedNodeSkillsUpdateError(error: unknown): boolean {
   );
 }
 
+function isUnsupportedNodeProtocolFeaturesUpdateError(error: unknown): boolean {
+  return (
+    error instanceof GatewayClientRequestError &&
+    error.gatewayCode === "INVALID_REQUEST" &&
+    error.message.includes("unknown method: node.protocolFeatures.update")
+  );
+}
+
+type NodeInvokeSessionEnvelopeMode = "authoritative" | "legacy";
+
+async function negotiateNodeInvokeSessionEnvelope(
+  client: GatewayClient,
+): Promise<NodeInvokeSessionEnvelopeMode> {
+  try {
+    await client.request("node.protocolFeatures.update", {
+      features: [NODE_INVOKE_SESSION_KEY_ENVELOPE_PROTOCOL_FEATURE],
+    });
+    return "authoritative";
+  } catch (error) {
+    if (isUnsupportedNodeProtocolFeaturesUpdateError(error)) {
+      return "legacy";
+    }
+    writeStderrLine(`node host protocol feature publish failed: ${String(error)}`);
+    // Only a confirmed unknown-method response enables the legacy nested field.
+    // Other failures keep omitted envelopes fail-closed while the connection lives.
+    return "authoritative";
+  }
+}
+
 async function publishNodePluginTools(client: GatewayClient, tools: unknown[]): Promise<void> {
   try {
     await client.request("node.pluginTools.update", { tools });
@@ -224,6 +254,24 @@ export async function runNodeHost(opts: NodeHostRunOptions): Promise<void> {
   const url = `${scheme}://${urlHost}:${port}${contextPath}`;
   let inventory: NodeHostInventory = preparedRuntime.initialInventory;
   let gatewayHelloReceived = false;
+  let gatewayConnectionGeneration = 0;
+  let nodeInvokeSessionEnvelopeMode =
+    Promise.resolve<NodeInvokeSessionEnvelopeMode>("authoritative");
+  let nodeInvokeEventDispatch = Promise.resolve();
+  const queueNodeInvokeEvent = (dispatch: (mode: NodeInvokeSessionEnvelopeMode) => void): void => {
+    const connectionGeneration = gatewayConnectionGeneration;
+    const envelopeMode = nodeInvokeSessionEnvelopeMode;
+    nodeInvokeEventDispatch = nodeInvokeEventDispatch
+      .then(async () => {
+        const mode = await envelopeMode;
+        if (connectionGeneration === gatewayConnectionGeneration) {
+          dispatch(mode);
+        }
+      })
+      .catch((error) => {
+        writeStderrLine(`node host invoke event dispatch failed: ${String(error)}`);
+      });
+  };
 
   const publishInventory = () => {
     if (!gatewayHelloReceived) {
@@ -260,14 +308,18 @@ export async function runNodeHost(opts: NodeHostRunOptions): Promise<void> {
       if (evt.event === "node.invoke.cancel") {
         const payload = coerceNodeInvokeCancelPayload(evt.payload);
         if (payload) {
-          activeRuntime.cancel(payload.invokeId);
+          queueNodeInvokeEvent(() => {
+            activeRuntime.cancel(payload.invokeId);
+          });
         }
         return;
       }
       if (evt.event === "node.invoke.input") {
         const payload = coerceNodeInvokeInputPayload(evt.payload);
         if (payload) {
-          activeRuntime.handleInput(payload.invokeId, payload.seq, payload.payloadJSON);
+          queueNodeInvokeEvent(() => {
+            activeRuntime.handleInput(payload.invokeId, payload.seq, payload.payloadJSON);
+          });
         }
         return;
       }
@@ -278,11 +330,20 @@ export async function runNodeHost(opts: NodeHostRunOptions): Promise<void> {
       if (!payload) {
         return;
       }
-      void activeRuntime.invoke(payload);
+      queueNodeInvokeEvent((mode) => {
+        const invokePayload =
+          mode === "authoritative" && !Object.hasOwn(payload, "sessionKey")
+            ? { ...payload, sessionKey: null }
+            : payload;
+        void activeRuntime.invoke(invokePayload);
+      });
     },
     onHelloOk: () => {
       writeStderrLine(`node host gateway connected: ${url}`);
+      gatewayConnectionGeneration += 1;
+      nodeInvokeEventDispatch = Promise.resolve();
       gatewayHelloReceived = true;
+      nodeInvokeSessionEnvelopeMode = negotiateNodeInvokeSessionEnvelope(client);
       publishInventory();
     },
     onConnectError: (err) => {
@@ -300,7 +361,10 @@ export async function runNodeHost(opts: NodeHostRunOptions): Promise<void> {
       });
     },
     onClose: (code, reason) => {
+      gatewayConnectionGeneration += 1;
+      nodeInvokeEventDispatch = Promise.resolve();
       gatewayHelloReceived = false;
+      nodeInvokeSessionEnvelopeMode = Promise.resolve("authoritative");
       activeRuntime.cancelAll();
       writeStderrLine(`node host gateway closed (${code}): ${reason}`);
     },

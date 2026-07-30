@@ -1,7 +1,7 @@
 /** Tests node-host runner command parsing, timeout, and plugin dispatch behavior. */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ConnectErrorDetailCodes } from "../../packages/gateway-protocol/src/connect-error-details.js";
-import type { GatewayClientOptions } from "../gateway/client.js";
+import { GatewayClientRequestError, type GatewayClientOptions } from "../gateway/client.js";
 import type { configureNodeHost } from "./config.js";
 import { startNodeHostMcpManager, type NodeHostMcpManager } from "./mcp.js";
 import { runNodeHost } from "./runner.js";
@@ -66,6 +66,14 @@ vi.mock("../gateway/client-start-readiness.js", () => ({
 }));
 
 vi.mock("../gateway/client.js", () => ({
+  GatewayClientRequestError: class GatewayClientRequestError extends Error {
+    readonly gatewayCode: string;
+
+    constructor(params: { code: string; message: string }) {
+      super(params.message);
+      this.gatewayCode = params.code;
+    }
+  },
   GatewayClient: function GatewayClient(opts: GatewayClientOptions) {
     const client = {
       request: vi.fn(async () => ({})),
@@ -265,19 +273,26 @@ describe("runNodeHost", () => {
       event: "node.invoke.cancel",
       payload: { invokeId: "invoke-1", nodeId: "node-1" },
     });
-    options?.onClose?.(1000, "connection closed");
-
-    expect(mocks.activeRuntime.invoke).toHaveBeenCalledWith({
-      id: "invoke-1",
-      nodeId: "node-1",
-      command: "system.run",
-      paramsJSON: null,
-      timeoutMs: null,
-      idempotencyKey: null,
-      sessionKey: "agent:main:main",
+    await vi.waitFor(() =>
+      expect(mocks.activeRuntime.invoke).toHaveBeenCalledWith({
+        id: "invoke-1",
+        nodeId: "node-1",
+        command: "system.run",
+        paramsJSON: null,
+        timeoutMs: null,
+        idempotencyKey: null,
+        sessionKey: "agent:main:main",
+      }),
+    );
+    await vi.waitFor(() => {
+      expect(mocks.activeRuntime.handleInput).toHaveBeenCalledWith(
+        "invoke-1",
+        3,
+        '{"kind":"data"}',
+      );
+      expect(mocks.activeRuntime.cancel).toHaveBeenCalledWith("invoke-1");
     });
-    expect(mocks.activeRuntime.handleInput).toHaveBeenCalledWith("invoke-1", 3, '{"kind":"data"}');
-    expect(mocks.activeRuntime.cancel).toHaveBeenCalledWith("invoke-1");
+    options?.onClose?.(1000, "connection closed");
     expect(mocks.activeRuntime.cancelAll).toHaveBeenCalledOnce();
   });
 
@@ -516,6 +531,9 @@ describe("runNodeHost", () => {
       features: { methods: [], events: [] },
     } as unknown as Parameters<NonNullable<GatewayClientOptions["onHelloOk"]>>[0]);
 
+    expect(client?.request).toHaveBeenCalledWith("node.protocolFeatures.update", {
+      features: ["node-invoke-session-key-envelope-v1"],
+    });
     expect(client?.request).toHaveBeenCalledWith("node.pluginTools.update", {
       tools: [
         {
@@ -527,6 +545,116 @@ describe("runNodeHost", () => {
         },
       ],
     });
+  });
+
+  it("waits for session envelope negotiation before dispatching invokes", async () => {
+    mocks.useFakeRuntime = true;
+    await expect(runNodeHost({ gatewayHost: "127.0.0.1", gatewayPort: 18789 })).rejects.toThrow(
+      "event loop readiness timeout",
+    );
+    const options = lastCapturedOptions();
+    const client = mocks.capturedGatewayClients[0];
+    let resolveNegotiation: (() => void) | undefined;
+    client?.request.mockImplementation((method: string) => {
+      if (method === "node.protocolFeatures.update") {
+        return new Promise((resolve) => {
+          resolveNegotiation = () => resolve({});
+        });
+      }
+      return Promise.resolve({});
+    });
+
+    options?.onHelloOk?.({
+      protocol: 1,
+      features: { methods: [], events: [] },
+    } as unknown as Parameters<NonNullable<GatewayClientOptions["onHelloOk"]>>[0]);
+    options?.onEvent?.({
+      type: "event",
+      event: "node.invoke.request",
+      payload: {
+        id: "invoke-negotiating",
+        nodeId: "node-1",
+        command: "system.run",
+        paramsJSON: '{"sessionKey":"nested-session"}',
+      },
+    });
+    options?.onEvent?.({
+      type: "event",
+      event: "node.invoke.input",
+      payload: {
+        id: "invoke-negotiating",
+        nodeId: "node-1",
+        seq: 1,
+        payloadJSON: '{"kind":"data"}',
+      },
+    });
+    options?.onEvent?.({
+      type: "event",
+      event: "node.invoke.cancel",
+      payload: {
+        invokeId: "invoke-negotiating",
+        nodeId: "node-1",
+      },
+    });
+
+    expect(mocks.activeRuntime.invoke).not.toHaveBeenCalled();
+    expect(mocks.activeRuntime.handleInput).not.toHaveBeenCalled();
+    expect(mocks.activeRuntime.cancel).not.toHaveBeenCalled();
+    resolveNegotiation?.();
+    await vi.waitFor(() => {
+      expect(mocks.activeRuntime.invoke).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: "invoke-negotiating",
+          sessionKey: null,
+        }),
+      );
+      expect(mocks.activeRuntime.handleInput).toHaveBeenCalledWith(
+        "invoke-negotiating",
+        1,
+        '{"kind":"data"}',
+      );
+      expect(mocks.activeRuntime.cancel).toHaveBeenCalledWith("invoke-negotiating");
+    });
+    expect(mocks.activeRuntime.invoke.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.activeRuntime.handleInput.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    );
+    expect(mocks.activeRuntime.handleInput.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.activeRuntime.cancel.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    );
+  });
+
+  it("preserves absent envelopes only after an old gateway is confirmed", async () => {
+    mocks.useFakeRuntime = true;
+    await expect(runNodeHost({ gatewayHost: "127.0.0.1", gatewayPort: 18789 })).rejects.toThrow(
+      "event loop readiness timeout",
+    );
+    const options = lastCapturedOptions();
+    const client = mocks.capturedGatewayClients[0];
+    client?.request.mockRejectedValueOnce(
+      new GatewayClientRequestError({
+        code: "INVALID_REQUEST",
+        message: "unknown method: node.protocolFeatures.update",
+      }),
+    );
+
+    options?.onHelloOk?.({
+      protocol: 1,
+      features: { methods: [], events: [] },
+    } as unknown as Parameters<NonNullable<GatewayClientOptions["onHelloOk"]>>[0]);
+    options?.onEvent?.({
+      type: "event",
+      event: "node.invoke.request",
+      payload: {
+        id: "invoke-legacy",
+        nodeId: "node-1",
+        command: "system.run",
+        paramsJSON: '{"sessionKey":"legacy-session"}',
+      },
+    });
+
+    await vi.waitFor(() => expect(mocks.activeRuntime.invoke).toHaveBeenCalledOnce());
+    const payload = mocks.activeRuntime.invoke.mock.calls[0]?.[0];
+    expect(payload && Object.hasOwn(payload, "sessionKey")).toBe(false);
   });
 
   it("clears gateway plugin tools when the final node-hosted tool disappears", async () => {

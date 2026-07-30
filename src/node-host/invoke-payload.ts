@@ -29,7 +29,7 @@ export function coerceNodeInvokePayload(payload: unknown): NodeInvokeRequestPayl
     paramsJSON,
     timeoutMs,
     idempotencyKey,
-    sessionKey,
+    ...(Object.hasOwn(obj, "sessionKey") ? { sessionKey } : {}),
   };
 }
 

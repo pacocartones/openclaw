@@ -21,10 +21,18 @@ describe("coerceNodeInvokePayload", () => {
     });
   });
 
-  it("normalizes missing or empty session attribution to null", () => {
-    expect(coerceNodeInvokePayload({ id: "i", nodeId: "n", command: "system.run" })).toMatchObject({
-      sessionKey: null,
-    });
+  it("distinguishes a missing legacy envelope from an explicit clear", () => {
+    expect(
+      coerceNodeInvokePayload({ id: "i", nodeId: "n", command: "system.run" }),
+    ).not.toHaveProperty("sessionKey");
+    expect(
+      coerceNodeInvokePayload({
+        id: "i",
+        nodeId: "n",
+        command: "system.run",
+        sessionKey: null,
+      }),
+    ).toMatchObject({ sessionKey: null });
     expect(
       coerceNodeInvokePayload({
         id: "i",

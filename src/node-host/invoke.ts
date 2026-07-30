@@ -138,7 +138,11 @@ function bindNodeInvokeSessionKey<
     sessionKey?: unknown;
     systemRunPlan?: SystemRunParams["systemRunPlan"];
   },
->(params: T, sessionKey: string | null | undefined): T {
+>(params: T, frame: NodeInvokeRequestPayload): T {
+  if (!Object.hasOwn(frame, "sessionKey")) {
+    return params;
+  }
+  const sessionKey = frame.sessionKey ?? null;
   // The Gateway envelope owns run correlation. Nested command params are
   // caller-controlled and must not mint or retain a different session binding.
   const systemRunPlan =
@@ -147,7 +151,7 @@ function bindNodeInvokeSessionKey<
       : { ...params.systemRunPlan, sessionKey: sessionKey ?? null };
   return {
     ...params,
-    sessionKey: sessionKey ?? undefined,
+    sessionKey,
     ...(systemRunPlan !== undefined ? { systemRunPlan } : {}),
   };
 }
@@ -765,11 +769,12 @@ async function dispatchInvoke(
   }
   try {
     const { pluginCommandIo: io, pluginCommandContext: context } = runtime;
+    const hasSessionKeyEnvelope = Object.hasOwn(frame, "sessionKey");
     const invokeContext =
-      context && (frame.sessionKey || runtime.signal)
+      context && (hasSessionKeyEnvelope || runtime.signal)
         ? {
             ...context,
-            ...(frame.sessionKey ? { sessionKey: frame.sessionKey } : {}),
+            ...(hasSessionKeyEnvelope ? { sessionKey: frame.sessionKey ?? undefined } : {}),
             ...(runtime.signal ? { signal: runtime.signal } : {}),
           }
         : context;
@@ -790,7 +795,7 @@ async function dispatchInvoke(
           decodeParams<SystemRunPrepareParams>(frame.paramsJSON),
           frame.nodeId,
         ),
-        frame.sessionKey,
+        frame,
       );
       const prepared = buildSystemRunApprovalPlan(params);
       if (!prepared.ok) {
@@ -849,7 +854,7 @@ async function dispatchInvoke(
   try {
     params = bindNodeInvokeSessionKey(
       resolveNodeSkillCwdParam(decodeParams<SystemRunParams>(frame.paramsJSON), frame.nodeId),
-      frame.sessionKey,
+      frame,
     );
   } catch (err) {
     await sendInvalidRequestResult(client, frame, err);
