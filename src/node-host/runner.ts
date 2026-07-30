@@ -331,6 +331,8 @@ export async function runNodeHost(opts: NodeHostRunOptions): Promise<void> {
         return;
       }
       queueNodeInvokeEvent((mode) => {
+        // The Gateway sends non-empty attribution to every node immediately;
+        // negotiation gates only the explicit null clear for unattributed invokes.
         const invokePayload =
           mode === "authoritative" && !Object.hasOwn(payload, "sessionKey")
             ? { ...payload, sessionKey: null }

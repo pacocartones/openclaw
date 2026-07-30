@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ConnectErrorDetailCodes } from "../../packages/gateway-protocol/src/connect-error-details.js";
 import { GatewayClientRequestError, type GatewayClientOptions } from "../gateway/client.js";
 import type { configureNodeHost } from "./config.js";
+import type { NodeInvokeRequestPayload } from "./invoke-types.js";
 import { startNodeHostMcpManager, type NodeHostMcpManager } from "./mcp.js";
 import { runNodeHost } from "./runner.js";
 
@@ -49,7 +50,7 @@ const mocks = vi.hoisted(() => ({
   })),
   resolveGatewayConnectionAuth: vi.fn(async () => ({})),
   activeRuntime: {
-    invoke: vi.fn(async () => {}),
+    invoke: vi.fn(async (_payload: NodeInvokeRequestPayload) => {}),
     handleInput: vi.fn(),
     cancel: vi.fn(),
     cancelAll: vi.fn(),

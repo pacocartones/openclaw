@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { NodeHostClient } from "./client.js";
+import type { NodeHostInvokeRuntime } from "./invoke-agent-cli-claude-handler.js";
 import { decodeClaudeCliNodeRunParams } from "./invoke-agent-cli-claude-params.js";
 import { runClaudeCliNodeCommand } from "./invoke-agent-cli-claude.js";
 import { handleInvoke, type NodeInvokeRequestPayload } from "./invoke.js";
@@ -229,7 +230,10 @@ describe("Claude CLI node command", () => {
   it("clears nested Claude run attribution from an explicit Gateway envelope", async () => {
     const executable = await executableScript("process.exit(0);");
     const calls: Array<{ method: string; params: unknown }> = [];
-    const handleSystemRun = vi.fn(async () => undefined);
+    const handleSystemRun = vi.fn(
+      async (_options: Parameters<NonNullable<NodeHostInvokeRuntime["handleSystemRun"]>>[0]) =>
+        undefined,
+    );
     const invokeFrame = frame({
       argv: ["-p"],
       sessionKey: "agent:forged:request",
