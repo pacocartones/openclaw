@@ -133,6 +133,25 @@ function resolveNodeSkillCwdParam<T extends { cwd?: unknown }>(params: T, nodeId
   return resolved ? { ...params, cwd: resolved } : params;
 }
 
+function bindNodeInvokeSessionKey<
+  T extends {
+    sessionKey?: unknown;
+    systemRunPlan?: SystemRunParams["systemRunPlan"];
+  },
+>(params: T, sessionKey: string | null | undefined): T {
+  // The Gateway envelope owns run correlation. Nested command params are
+  // caller-controlled and must not mint or retain a different session binding.
+  const systemRunPlan =
+    params.systemRunPlan === undefined || params.systemRunPlan === null
+      ? params.systemRunPlan
+      : { ...params.systemRunPlan, sessionKey: sessionKey ?? null };
+  return {
+    ...params,
+    sessionKey: sessionKey ?? undefined,
+    ...(systemRunPlan !== undefined ? { systemRunPlan } : {}),
+  };
+}
+
 function buildEnvOverrideRejectionMessage(params: {
   rejectedOverrideBlockedKeys: string[];
   rejectedOverrideInvalidKeys: string[];
@@ -766,9 +785,12 @@ async function dispatchInvoke(
 
   if (command === "system.run.prepare") {
     try {
-      const params = resolveNodeSkillCwdParam(
-        decodeParams<SystemRunPrepareParams>(frame.paramsJSON),
-        frame.nodeId,
+      const params = bindNodeInvokeSessionKey(
+        resolveNodeSkillCwdParam(
+          decodeParams<SystemRunPrepareParams>(frame.paramsJSON),
+          frame.nodeId,
+        ),
+        frame.sessionKey,
       );
       const prepared = buildSystemRunApprovalPlan(params);
       if (!prepared.ok) {
@@ -825,9 +847,9 @@ async function dispatchInvoke(
 
   let params: SystemRunParams;
   try {
-    params = resolveNodeSkillCwdParam(
-      decodeParams<SystemRunParams>(frame.paramsJSON),
-      frame.nodeId,
+    params = bindNodeInvokeSessionKey(
+      resolveNodeSkillCwdParam(decodeParams<SystemRunParams>(frame.paramsJSON), frame.nodeId),
+      frame.sessionKey,
     );
   } catch (err) {
     await sendInvalidRequestResult(client, frame, err);
