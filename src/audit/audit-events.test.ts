@@ -444,6 +444,62 @@ describe("agent activity audit projection", () => {
     ]);
   });
 
+  it("persists colliding run tuples from distinct lifecycle generations", async () => {
+    const database = createDatabaseOptions();
+    const recorder = createAgentEventAuditRecorder({
+      stateDir: database.env.OPENCLAW_STATE_DIR,
+      terminalSettleMs: 0,
+    });
+    const runId = "run-reused-persisted";
+    const occurredAt = 1_786_000_000_000;
+    const firstGeneration = getAgentEventLifecycleGeneration();
+
+    recorder.record(
+      agentEvent({
+        runId,
+        seq: 1,
+        ts: occurredAt,
+        data: { phase: "start", startedAt: occurredAt },
+        lifecycleGeneration: firstGeneration,
+        sessionKey: "agent:first:main",
+        sessionId: "session-first",
+        agentId: "first",
+      }),
+    );
+    const secondGeneration = rotateAgentEventLifecycleGeneration();
+    recorder.record(
+      agentEvent({
+        runId,
+        seq: 1,
+        ts: occurredAt,
+        data: { phase: "start", startedAt: occurredAt },
+        lifecycleGeneration: secondGeneration,
+        sessionKey: "agent:second:main",
+        sessionId: "session-second",
+        agentId: "second",
+      }),
+    );
+    await recorder.stop();
+
+    const persisted = listAuditEvents({ database, limit: 10 }).events.filter(
+      (event) => event.runId === runId && event.action === "agent.run.started",
+    );
+    expect(persisted.map((event) => event.actorId)).toEqual(["second", "first"]);
+    const { db } = openOpenClawStateDatabase(database);
+    const sourceIds = db
+      .prepare(
+        "SELECT source_id FROM audit_events WHERE run_id = ? AND action = ? ORDER BY sequence",
+      )
+      .all(runId, "agent.run.started")
+      .map((row) => (row as { source_id: string }).source_id);
+    expect(new Set(sourceIds)).toEqual(
+      new Set([
+        `lifecycle:${firstGeneration}:${runId}:1:${occurredAt}:agent.run.started`,
+        `lifecycle:${secondGeneration}:${runId}:1:${occurredAt}:agent.run.started`,
+      ]),
+    );
+  });
+
   it("does not let a late old-generation terminal reactivate provenance", async () => {
     const inputs: AuditEventInput[] = [];
     const recorder = createAgentEventAuditRecorder({
