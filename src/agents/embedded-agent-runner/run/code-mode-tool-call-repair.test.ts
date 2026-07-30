@@ -65,6 +65,19 @@ async function invoke(
   return await stream.result();
 }
 
+function requireExecCode(result: Awaited<ReturnType<typeof invoke>>): string {
+  for (const block of result.content) {
+    if (block.type !== "toolCall" || block.name !== "exec") {
+      continue;
+    }
+    const code = block.arguments.code;
+    if (typeof code === "string") {
+      return code;
+    }
+  }
+  throw new Error("expected an exec tool call with string code");
+}
+
 describe("Code Mode outer guest tool-call repair", () => {
   it("keeps an exact visible native method direct without rewriting cwd-like paths", async () => {
     const message = {
@@ -265,10 +278,8 @@ describe("Code Mode outer guest tool-call repair", () => {
       ],
     };
 
-    const result = (await invoke({ resultMessage: message })) as {
-      content: Array<{ arguments: { code: string } }>;
-    };
-    expect(result.content[0]?.arguments.code).toContain(
+    const result = await invoke({ resultMessage: message });
+    expect(requireExecCode(result)).toContain(
       'await tools["edit"](JSON.parse("{\\"path\\":\\"editable.txt\\",\\"edits\\":[{\\"oldText\\":\\"status=pending\\",\\"newText\\":\\"status=verified\\"}]}"))',
     );
   });
@@ -307,10 +318,8 @@ describe("Code Mode outer guest tool-call repair", () => {
       ],
     };
 
-    const result = (await invoke({ resultMessage: message })) as {
-      content: Array<{ arguments: { code: string } }>;
-    };
-    expect(result.content[0]?.arguments.code).toContain(
+    const result = await invoke({ resultMessage: message });
+    expect(requireExecCode(result)).toContain(
       'JSON.parse("{\\"path\\":\\"editable.txt\\",\\"edits\\":[{\\"oldText\\":\\"status=pending\\",\\"newText\\":\\"status=verified\\"}]}")',
     );
   });
@@ -502,10 +511,7 @@ describe("Code Mode outer guest tool-call repair", () => {
     };
 
     const result = await invoke({ resultMessage: message });
-    const code = (result as { content: Array<{ arguments: { code: string } }> }).content[0]
-      ?.arguments.code;
-
-    expect(code).toBe(
+    expect(requireExecCode(result)).toBe(
       'const __openclawResult = await tools["read"](JSON.parse("{\\"__proto__\\":{\\"safe\\":true},\\"nested\\":{\\"__proto__\\":\\"value\\"}}")); console.log("Recovered only the read guest tool call. Re-read the original request and complete every remaining step before answering; do not repeat this completed call. If the user requested a named key\'s value, use the value associated with that exact key, never the key name itself."); return __openclawResult;',
     );
   });

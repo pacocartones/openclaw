@@ -38,6 +38,8 @@ function parkExpiringRun(
     method,
     args: method === "agentWait" ? ["collector-1"] : ["openclaw:core:slow", {}],
     promise: new Promise(() => {}),
+    knownSideEffectFree: false,
+    potentialSideEffectStarted: method === "agentWait",
     cancel,
   };
 
