@@ -1684,10 +1684,10 @@ describe("before_tool_call adapter and client tool integration", () => {
           sessionKey: "agent:main:voice",
           sessionId: "session-voice",
         }),
-        runId,
-        agentId: "main",
-        sessionKey: "agent:main:voice",
-        sessionId: "session-voice",
+        runId: "run-flat-forged",
+        agentId: "flat-forged",
+        sessionKey: "agent:flat:forged",
+        sessionId: "session-flat-forged",
       };
       const tool =
         pathKind === "wrapped"

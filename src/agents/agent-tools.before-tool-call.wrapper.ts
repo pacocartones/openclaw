@@ -76,8 +76,25 @@ type ForwardedToolExecution = (...args: unknown[]) => ReturnType<AnyAgentTool["e
 const MAX_TRACKED_ADJUSTED_PARAMS = 1024;
 
 function buildToolPreparationHookContext(ctx: HookContext): Omit<HookContext, "attribution"> {
-  const { attribution: _hostAttribution, ...toolHookContext } = ctx;
-  return toolHookContext;
+  if (!ctx.attribution) {
+    const { attribution: _hostAttribution, ...toolHookContext } = ctx;
+    return toolHookContext;
+  }
+  const {
+    attribution,
+    agentId: _flatAgentId,
+    sessionKey: _flatSessionKey,
+    sessionId: _flatSessionId,
+    runId: _flatRunId,
+    ...toolHookContext
+  } = ctx;
+  return {
+    ...toolHookContext,
+    runId: attribution.runId,
+    ...(attribution.agentId ? { agentId: attribution.agentId } : {}),
+    ...(attribution.sessionKey ? { sessionKey: attribution.sessionKey } : {}),
+    ...(attribution.sessionId ? { sessionId: attribution.sessionId } : {}),
+  };
 }
 
 /** Run tool-owned preparation while retaining the exact prepared object. */
