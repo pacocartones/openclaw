@@ -14,10 +14,8 @@ import {
   isAgentEventLifecycleGenerationCurrent,
   type AgentEventPayload,
 } from "../infra/agent-events.js";
-import {
-  getTrustedToolExecutionLifecycleGeneration,
-  type TrustedToolExecutionEvent,
-} from "../infra/diagnostic-events.js";
+import type { TrustedToolExecutionEvent } from "../infra/diagnostic-events.js";
+import { getTrustedToolExecutionLifecycleGeneration } from "../infra/trusted-tool-execution-context.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { parseAgentSessionKey } from "../routing/session-key.js";
 import type {
