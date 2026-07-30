@@ -1439,7 +1439,7 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
     expectNoWarnMessageWith("settled post-tool turn lacked a final answer");
   });
 
-  it("returns a visible Code Mode answer after a successful write-only sequence", async () => {
+  it("requires read-back after a successful Code Mode write-only sequence", async () => {
     const prematureAssistant = {
       role: "assistant",
       stopReason: "stop",
@@ -1469,7 +1469,36 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
         currentAttemptCompletedAssistant: prematureAssistant,
       }),
     );
-    mockedBuildEmbeddedRunPayloads.mockReturnValueOnce([{ text: "CM-EXAMPLE" }]);
+    const verifiedAssistant = {
+      role: "assistant",
+      stopReason: "stop",
+      provider: "ollama",
+      model: "qwen3.5:9b",
+      content: [{ type: "text", text: "CM-EXAMPLE" }],
+    } as unknown as NonNullable<EmbeddedRunAttemptResult["lastAssistant"]>;
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce(
+      makeAttemptResult({
+        assistantTexts: ["CM-EXAMPLE"],
+        codeModeEngaged: true,
+        toolMetas: [
+          {
+            toolName: "read",
+            replaySafe: true,
+            fileTarget: { path: "result.txt" },
+            fileTargetVerified: true,
+          },
+        ],
+        replayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
+        currentAttemptReplayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
+        itemLifecycle: { startedCount: 1, completedCount: 1, activeCount: 0 },
+        lastAssistant: verifiedAssistant,
+        currentAttemptAssistant: verifiedAssistant,
+        currentAttemptCompletedAssistant: verifiedAssistant,
+      }),
+    );
+    mockedBuildEmbeddedRunPayloads
+      .mockReturnValueOnce([{ text: "CM-EXAMPLE" }])
+      .mockReturnValueOnce([{ text: "CM-EXAMPLE" }]);
 
     const result = await runEmbeddedAgent({
       ...overflowBaseRunParams,
@@ -1478,9 +1507,12 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
       runId: "run-visible-mutating-code-mode-continuation",
     });
 
-    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(1);
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(2);
     expect(result.payloads?.[0]?.text).toBe("CM-EXAMPLE");
-    expectNoWarnMessageWith("settled Code Mode work stopped before final verification");
+    const verificationCall = runAttemptCall(1);
+    expect(verificationCall.prompt).toBe(RESTART_SAFE_CODE_MODE_CONTINUATION_INSTRUCTION);
+    expect(verificationCall.forceReadOnlyTools).toBe(true);
+    expectWarnMessageWith("settled Code Mode work stopped before final verification");
   });
 
   it.each([
@@ -2888,7 +2920,7 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
           },
         ],
       }),
-    ).toBe(false);
+    ).toBe(true);
     expect(
       requiresCodeModeMutationVerification({
         codeModeEngaged: true,
@@ -2903,7 +2935,7 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
     ).toBe(true);
   });
 
-  it("does not force read-back after a successful native Code Mode mutation", () => {
+  it("requires read-back after a successful native Code Mode mutation", () => {
     const mutation = {
       codeModeEngaged: true,
       toolMetas: [
@@ -2916,7 +2948,7 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
       ],
     } satisfies CodeModeMutationAttempt;
 
-    expect(requiresCodeModeMutationVerification(mutation)).toBe(false);
+    expect(requiresCodeModeMutationVerification(mutation)).toBe(true);
     expect(
       requiresCodeModeMutationVerification({
         ...mutation,
@@ -2939,13 +2971,13 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
           },
         ],
       }),
-    ).toBe(false);
+    ).toBe(true);
     expect(
       requiresCodeModeMutationVerification({
         ...mutation,
         toolMetas: [...mutation.toolMetas, { toolName: "read", fileTarget: { path: "other.txt" } }],
       }),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it("allows a normal-tool fallback read to clear a carried Code Mode target", () => {
@@ -2982,7 +3014,7 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
     ).toEqual({ pendingTargets: [{ path: "result.txt" }] });
   });
 
-  it("requires read-back only when native apply_patch execution is uncertain", () => {
+  it("requires read-back after a successful native apply_patch mutation", () => {
     const mutation = {
       codeModeEngaged: true,
       toolMetas: [
@@ -2995,7 +3027,7 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
       ],
     } satisfies CodeModeMutationAttempt;
 
-    expect(requiresCodeModeMutationVerification(mutation)).toBe(false);
+    expect(requiresCodeModeMutationVerification(mutation)).toBe(true);
     expect(
       requiresCodeModeMutationVerification({
         ...mutation,
@@ -3004,7 +3036,7 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
           { toolName: "read", fileTarget: { path: "a.ts" }, fileTargetVerified: true },
         ],
       }),
-    ).toBe(false);
+    ).toBe(true);
     expect(
       requiresCodeModeMutationVerification({
         ...mutation,

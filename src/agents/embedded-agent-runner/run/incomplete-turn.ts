@@ -300,15 +300,19 @@ export function resolveCodeModeMutationVerificationState(
     if (!codeModeEngaged) {
       continue;
     }
-    if (toolName !== "exec" && toolName !== "wait") {
+    if (
+      (toolName === "write" || toolName === "edit" || toolName === "apply_patch") &&
+      tool.mutatingAction === true &&
+      tool.fileMutationExecutionStarted === true
+    ) {
+      addMutationEvidence(tool.fileTargets, tool.fileTarget);
       continue;
     }
-    if (tool.sideEffectFree === false) {
-      for (const target of tool.codeModeUnverifiedMutationFileTargets ?? []) {
-        if (target.expected === "unknown") {
-          addPendingTarget(target);
-        }
-      }
+    if ((toolName === "exec" || toolName === "wait") && tool.sideEffectFree === false) {
+      // The bridge snapshot is the final state for the whole cell. Add it
+      // after historical observations so an observation-before-write cannot
+      // incorrectly verify the later mutation.
+      addMutationEvidence(tool.codeModeUnverifiedMutationFileTargets);
     }
   }
   return { pendingTargets };
