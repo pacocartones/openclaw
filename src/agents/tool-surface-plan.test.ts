@@ -60,12 +60,26 @@ describe("resolveAgentToolSurfacePlan", () => {
       config: { tools: { codeMode: false, toolSearch: true } },
       expected: { codeMode: false, toolSearch: true },
     },
+    {
+      name: "tool search remains unchanged when auto code mode declines a lean model",
+      config: {
+        agents: { defaults: { experimental: { localModelLean: true } } },
+        tools: { codeMode: "auto", toolSearch: true },
+      },
+      model: { compat: {} },
+      expected: { codeMode: false, toolSearch: true },
+    },
   ] satisfies Array<{
     name: string;
     config: OpenClawConfig;
+    model?: AgentToolSurfacePlanParams["model"];
     expected: { codeMode: boolean; toolSearch: boolean };
-  }>)("keeps controls mutually exclusive: $name", ({ config, expected }) => {
-    const plan = resolveAgentToolSurfacePlan({ ...basePlanParams, config });
+  }>)("keeps controls mutually exclusive: $name", ({ config, model, expected }) => {
+    const plan = resolveAgentToolSurfacePlan({
+      ...basePlanParams,
+      config,
+      ...(model ? { model } : {}),
+    });
 
     expect(plan.codeModeControlsEnabled).toBe(expected.codeMode);
     expect(plan.toolSearchControlsEnabled).toBe(expected.toolSearch);
