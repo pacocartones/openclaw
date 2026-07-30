@@ -501,8 +501,7 @@ function normalizeFileTargetValue(value: unknown): string | undefined {
   if (typeof value !== "string") {
     return undefined;
   }
-  const normalized = value.trim();
-  return normalized || undefined;
+  return value.trim() ? value : undefined;
 }
 
 export function buildToolFileTarget(toolName: string, args: unknown): FileTarget | undefined {

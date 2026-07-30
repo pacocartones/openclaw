@@ -43,6 +43,7 @@ import { hasTopLevelShellControlOperator, splitShellArgs } from "../utils/shell-
 import { normalizeAcceptedSessionSpawnResult } from "./accepted-session-spawn.js";
 import {
   consumeAdjustedParamsForToolCall,
+  consumeCodeModeControlToolCall,
   consumePreExecutionBlockedToolCall,
   consumeStructuredReplaySafeToolCall,
   consumeTrackedToolExecutionStarted,
@@ -1568,6 +1569,7 @@ export async function handleToolExecutionEnd(
   const trackedExecutionStarted = consumeTrackedToolExecutionStarted(toolCallId, runId);
   const executionPrevented = consumePreExecutionBlockedToolCall(toolCallId, runId);
   const structuredReplaySafe = consumeStructuredReplaySafeToolCall(toolCallId, runId);
+  const trustedCodeModeControl = consumeCodeModeControlToolCall(toolCallId, runId);
   const startArgs =
     adjustedArgs && typeof adjustedArgs === "object"
       ? (adjustedArgs as Record<string, unknown>)
@@ -1621,34 +1623,33 @@ export async function handleToolExecutionEnd(
   // The Code Mode repair envelope proves this exec failed before any nested
   // tool dispatch, so it must not poison a later corrected attempt.
   const sideEffectFreeCodeModeFailure =
-    isToolError && isSideEffectFreeCodeModeFailure(toolName, sanitizedResult);
+    trustedCodeModeControl &&
+    isToolError &&
+    isSideEffectFreeCodeModeFailure(toolName, sanitizedResult);
   const sideEffectFreeCodeModeSuccess =
-    !isToolError && isSideEffectFreeCodeModeSuccess(toolName, sanitizedResult);
-  const codeModeSideEffectFree =
-    readCodeModeSideEffectFree(toolName, sanitizedResult) ??
-    (sideEffectFreeCodeModeFailure || sideEffectFreeCodeModeSuccess ? true : undefined);
-  const codeModeLastCallSideEffectFree = readCodeModeLastCallSideEffectFree(
-    toolName,
-    sanitizedResult,
-  );
-  const codeModeSuccessfulObservationFileTargets = readCodeModeFileTargets(
-    toolName,
-    sanitizedResult,
-    "successfulObservationFileTargets",
-  );
-  const codeModeSuccessfulAbsenceObservationFileTargets = readCodeModeFileTargets(
-    toolName,
-    sanitizedResult,
-    "successfulAbsenceObservationFileTargets",
-  );
-  const codeModeUnverifiedMutationFileTargets = readCodeModeFileTargets(
-    toolName,
-    sanitizedResult,
-    "unverifiedMutationFileTargets",
-  );
-  const codeModeRepairAllowed = isToolError
-    ? readCodeModeRepairAllowed(toolName, sanitizedResult)
+    trustedCodeModeControl &&
+    !isToolError &&
+    isSideEffectFreeCodeModeSuccess(toolName, sanitizedResult);
+  const codeModeSideEffectFree = trustedCodeModeControl
+    ? (readCodeModeSideEffectFree(toolName, sanitizedResult) ??
+      (sideEffectFreeCodeModeFailure || sideEffectFreeCodeModeSuccess ? true : undefined))
     : undefined;
+  const codeModeLastCallSideEffectFree = trustedCodeModeControl
+    ? readCodeModeLastCallSideEffectFree(toolName, sanitizedResult)
+    : undefined;
+  const codeModeSuccessfulObservationFileTargets = trustedCodeModeControl
+    ? readCodeModeFileTargets(toolName, sanitizedResult, "successfulObservationFileTargets")
+    : undefined;
+  const codeModeSuccessfulAbsenceObservationFileTargets = trustedCodeModeControl
+    ? readCodeModeFileTargets(toolName, sanitizedResult, "successfulAbsenceObservationFileTargets")
+    : undefined;
+  const codeModeUnverifiedMutationFileTargets = trustedCodeModeControl
+    ? readCodeModeFileTargets(toolName, sanitizedResult, "unverifiedMutationFileTargets")
+    : undefined;
+  const codeModeRepairAllowed =
+    trustedCodeModeControl && isToolError
+      ? readCodeModeRepairAllowed(toolName, sanitizedResult)
+      : undefined;
   const replaySafe =
     callSummary.replaySafe || sideEffectFreeCodeModeFailure || sideEffectFreeCodeModeSuccess;
   const attemptedPotentialSideEffect =

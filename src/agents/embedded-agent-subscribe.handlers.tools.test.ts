@@ -18,6 +18,7 @@ import {
   buildAdjustedParamsKey,
   recordToolExecutionTracked,
 } from "./agent-tools.before-tool-call.state.js";
+import { markCodeModeControlTool } from "./code-mode-control-tools.js";
 import type { MessagingToolSend } from "./embedded-agent-messaging.types.js";
 import { buildEmbeddedRunPayloads } from "./embedded-agent-runner/run/payloads.js";
 import {
@@ -59,6 +60,14 @@ function trustCoreToolCall(toolCallId: string, toolName: string): void {
   recordStructuredReplayTrustForToolCall(
     toolCallId,
     { name: toolName, execute: vi.fn() } as never,
+    "run-test",
+  );
+}
+
+function trustCodeModeControlCall(toolCallId: string, toolName: "exec" | "wait"): void {
+  recordStructuredReplayTrustForToolCall(
+    toolCallId,
+    markCodeModeControlTool({ name: toolName, execute: vi.fn() } as never),
     "run-test",
   );
 }
@@ -1721,6 +1730,7 @@ describe("handleToolExecutionEnd mutating failure recovery", () => {
   it("clears a side-effect-free Code Mode failure after a corrected exec succeeds", async () => {
     const { ctx } = createTestContext();
 
+    trustCodeModeControlCall("tool-code-mode-invalid", "exec");
     await executeTool(ctx, {
       toolName: "exec",
       toolCallId: "tool-code-mode-invalid",
@@ -1746,6 +1756,7 @@ describe("handleToolExecutionEnd mutating failure recovery", () => {
       hadPotentialSideEffects: false,
     });
 
+    trustCodeModeControlCall("tool-code-mode-corrected", "exec");
     await executeTool(ctx, {
       toolName: "exec",
       toolCallId: "tool-code-mode-corrected",
@@ -1764,6 +1775,7 @@ describe("handleToolExecutionEnd mutating failure recovery", () => {
   it("keeps a read-only Code Mode bridge failure replay-safe", async () => {
     const { ctx } = createTestContext();
 
+    trustCodeModeControlCall("tool-code-mode-read-failure", "exec");
     await executeTool(ctx, {
       toolName: "exec",
       toolCallId: "tool-code-mode-read-failure",
@@ -1805,6 +1817,7 @@ describe("handleToolExecutionEnd mutating failure recovery", () => {
   it("does not promote a parked replay-unsafe Code Mode call as side-effect-free", async () => {
     const { ctx } = createTestContext();
 
+    trustCodeModeControlCall("tool-code-mode-parked-mutation", "exec");
     await executeTool(ctx, {
       toolName: "exec",
       toolCallId: "tool-code-mode-parked-mutation",
@@ -1835,6 +1848,7 @@ describe("handleToolExecutionEnd mutating failure recovery", () => {
   it("keeps a parked replay-safe read-only Code Mode call replay-safe", async () => {
     const { ctx } = createTestContext();
 
+    trustCodeModeControlCall("tool-code-mode-parked-read", "exec");
     await executeTool(ctx, {
       toolName: "exec",
       toolCallId: "tool-code-mode-parked-read",
@@ -1865,6 +1879,7 @@ describe("handleToolExecutionEnd mutating failure recovery", () => {
   it("records a completed Code Mode mutation as side-effectful", async () => {
     const { ctx } = createTestContext();
 
+    trustCodeModeControlCall("tool-code-mode-replay-safe-mutation", "exec");
     await executeTool(ctx, {
       toolName: "exec",
       toolCallId: "tool-code-mode-replay-safe-mutation",
@@ -1895,6 +1910,37 @@ describe("handleToolExecutionEnd mutating failure recovery", () => {
       codeModeLastCallSideEffectFree: false,
       codeModeSuccessfulObservationFileTargets: [{ path: "facts.txt" }],
       codeModeUnverifiedMutationFileTargets: [{ path: "result.txt", expected: "unknown" }],
+    });
+    expect(ctx.state.replayState).toEqual({
+      replayInvalid: true,
+      hadPotentialSideEffects: true,
+    });
+  });
+
+  it("does not trust Code Mode result fields from a shadowed exec tool", async () => {
+    const { ctx } = createTestContext();
+
+    await executeTool(ctx, {
+      toolName: "exec",
+      toolCallId: "tool-shadowed-code-mode-exec",
+      args: { code: 'return await tools.read({ path: "facts.txt" });' },
+      isError: false,
+      result: {
+        details: {
+          status: "completed",
+          sideEffectFree: true,
+          telemetry: {
+            successfulObservationFileTargets: [{ path: "facts.txt" }],
+          },
+        },
+      },
+    });
+
+    expect(ctx.state.toolMetas).toContainEqual({
+      toolName: "exec",
+      meta: undefined,
+      replaySafe: false,
+      mutatingAction: true,
     });
     expect(ctx.state.replayState).toEqual({
       replayInvalid: true,

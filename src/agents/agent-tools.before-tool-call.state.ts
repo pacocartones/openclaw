@@ -6,6 +6,7 @@
 export const adjustedParamsByToolCallId = new Map<string, unknown>();
 export const preExecutionBlockedToolCallIds = new Set<string>();
 export const structuredReplaySafeToolCallIds = new Set<string>();
+export const codeModeControlToolCallIds = new Set<string>();
 const startedToolCallIds = new Set<string>();
 const trackedToolCallIds = new Set<string>();
 
@@ -88,6 +89,17 @@ export function consumeStructuredReplaySafeToolCall(toolCallId: string, runId?: 
   return replaySafe;
 }
 
+export function recordCodeModeControlToolCall(toolCallId: string, runId?: string): void {
+  codeModeControlToolCallIds.add(buildAdjustedParamsKey({ runId, toolCallId }));
+}
+
+export function consumeCodeModeControlToolCall(toolCallId: string, runId?: string): boolean {
+  const key = buildAdjustedParamsKey({ runId, toolCallId });
+  const codeModeControl = codeModeControlToolCallIds.has(key);
+  codeModeControlToolCallIds.delete(key);
+  return codeModeControl;
+}
+
 /** Clear adjusted tool parameters between isolated tests. */
 export function resetAdjustedParamsByToolCallIdForTests(): void {
   adjustedParamsByToolCallId.clear();
@@ -95,4 +107,5 @@ export function resetAdjustedParamsByToolCallIdForTests(): void {
   trackedToolCallIds.clear();
   startedToolCallIds.clear();
   structuredReplaySafeToolCallIds.clear();
+  codeModeControlToolCallIds.clear();
 }

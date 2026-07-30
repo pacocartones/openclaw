@@ -2,6 +2,7 @@
 // used to decide whether repeated tool actions can recover prior failures.
 import { describe, expect, it } from "vitest";
 import {
+  buildToolFileTarget,
   buildToolInputFileTargets,
   buildToolMutationState,
   buildToolResultFileTargets,
@@ -487,6 +488,13 @@ describe("tool mutation helpers", () => {
   it("matches lexically equivalent verification targets", () => {
     expect(isSameFileTarget({ path: "result.txt" }, { path: "./result.txt" })).toBe(true);
     expect(isSameFileTarget({ path: "src/../result.txt" }, { path: "result.txt" })).toBe(true);
+  });
+
+  it("preserves whitespace in file-target identities", () => {
+    expect(buildToolFileTarget("write", { path: " report.txt " })).toEqual({
+      path: " report.txt ",
+    });
+    expect(isSameFileTarget({ path: " report.txt" }, { path: "report.txt" }, "darwin")).toBe(false);
   });
 
   it("recognizes cross-tool file-mutation recovery on the same target (#79024)", () => {
