@@ -1,6 +1,6 @@
 import type { AssistantMessage } from "openclaw/plugin-sdk/llm";
 import { describe, expect, it, vi } from "vitest";
-import { createUsageAccumulator } from "../usage-accumulator.js";
+import { createUsageAccumulator, mergeUsageIntoAccumulator } from "../usage-accumulator.js";
 import { createEmbeddedRunContextRecoveryState } from "./context-recovery-state.js";
 import type { EmbeddedRunAttemptResult } from "./types.js";
 
@@ -143,7 +143,7 @@ describe("prepareEmbeddedRunTerminal run stats", () => {
       model,
     };
     const usageAccumulator = createUsageAccumulator();
-    Object.assign(usageAccumulator, statsInput.usage);
+    mergeUsageIntoAccumulator(usageAccumulator, statsInput.usage);
     usageAccumulator.assistantTurns = statsInput.assistantTurns ?? 0;
     usageAccumulator.bridgeCalls = statsInput.bridgeCalls;
     usageAccumulator.codeModeEngaged = statsInput.codeModeEngaged;
