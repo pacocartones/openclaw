@@ -289,7 +289,7 @@ describe("createOpenClawCodingTools read behavior", () => {
 
     const error = await readTool
       .execute("read-missing", { path: "notes.txt" })
-      .catch((caught) => caught);
+      .catch((caught: unknown) => caught);
 
     expect(error).toMatchObject({
       code: "ENOENT",
