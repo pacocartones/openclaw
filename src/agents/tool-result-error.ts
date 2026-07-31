@@ -232,9 +232,8 @@ type FileNotFoundEvidence = {
   ambiguousDiagnostic: boolean;
   conflictingPath: boolean;
   explicitConflictingPath: boolean;
-  explicitTargetedPath: boolean;
   spawnFailure: boolean;
-  structuredIdentity: boolean;
+  structuredTargetedPath: boolean;
   targetedPath: boolean;
   truncatedGraph: boolean;
 };
@@ -263,9 +262,7 @@ function collectDiagnosticNotFoundEvidence(
     const canonicalNotFound = isCanonicalFileNotFoundLine(line);
     if (!canonicalNotFound) {
       for (const candidate of explicitCandidates) {
-        if (matchesFileTargetPath(candidate, target, cwd)) {
-          evidence.explicitTargetedPath = true;
-        } else {
+        if (!matchesFileTargetPath(candidate, target, cwd)) {
           evidence.explicitConflictingPath = true;
         }
       }
@@ -309,7 +306,6 @@ function collectFileNotFoundEvidence(
     return;
   }
   const structuredIdentity = hasDirectStructuredNotFoundIdentity(value);
-  evidence.structuredIdentity ||= structuredIdentity;
   const syscall = readToolErrorField(value, "syscall");
   if (typeof syscall === "string" && hasSpawnFailureMarker(syscall)) {
     evidence.spawnFailure = true;
@@ -324,17 +320,21 @@ function collectFileNotFoundEvidence(
     "src",
     "target",
   ]);
+  let hasTargetedPathField = false;
   for (const key of pathKeys) {
     const field = readToolErrorField(value, key);
     if (typeof field !== "string" || !field.trim()) {
       continue;
     }
     if (matchesFileTargetPath(field, target, cwd)) {
-      evidence.explicitTargetedPath = true;
+      hasTargetedPathField = true;
     } else {
       evidence.explicitConflictingPath = true;
     }
   }
+  // Structured identity and path fields are only authoritative when they
+  // describe the same error object; wrapped sibling data may concern another failure.
+  evidence.structuredTargetedPath ||= structuredIdentity && hasTargetedPathField;
   const keys = new Set([
     ...readToolErrorKeys(value),
     "cause",
@@ -372,16 +372,14 @@ export function isFileTargetNotFoundToolFailure(
     ambiguousDiagnostic: false,
     conflictingPath: false,
     explicitConflictingPath: false,
-    explicitTargetedPath: false,
     spawnFailure: false,
-    structuredIdentity: false,
+    structuredTargetedPath: false,
     targetedPath: false,
     truncatedGraph: false,
   };
   collectFileNotFoundEvidence(value, target, cwd, new Set(), evidence);
   if (
-    (evidence.ambiguousDiagnostic &&
-      !(evidence.structuredIdentity && evidence.explicitTargetedPath)) ||
+    (evidence.ambiguousDiagnostic && !evidence.structuredTargetedPath) ||
     evidence.spawnFailure ||
     evidence.conflictingPath ||
     evidence.explicitConflictingPath ||
@@ -389,7 +387,7 @@ export function isFileTargetNotFoundToolFailure(
   ) {
     return false;
   }
-  return evidence.targetedPath || (evidence.structuredIdentity && evidence.explicitTargetedPath);
+  return evidence.targetedPath || evidence.structuredTargetedPath;
 }
 
 function hasStructuredToolTimeoutIdentity(error: unknown): boolean {

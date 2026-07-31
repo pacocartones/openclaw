@@ -261,7 +261,17 @@ describe("isFileTargetNotFoundToolFailure", () => {
         missingTarget,
         workspaceCwd,
       ),
-    ).toBe(true);
+    ).toBe(false);
+    expect(
+      isFileTargetNotFoundToolFailure(
+        {
+          details: { code: "ENOENT", message: "helper missing" },
+          request: { path: "/workspace/missing.txt" },
+        },
+        missingTarget,
+        workspaceCwd,
+      ),
+    ).toBe(false);
     expect(
       isFileTargetNotFoundToolFailure(
         { code: "ENOENT", path: "/workspace/missing.txt" },
