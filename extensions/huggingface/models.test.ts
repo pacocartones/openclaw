@@ -344,6 +344,14 @@ describe("huggingface models", () => {
         id: "test-org/chat-model:primary",
         compat: { supportsTools: true },
       } as never),
+    ).toMatchObject({
+      compat: { supportsTools: false },
+    });
+    expect(
+      normalizeHuggingfaceResolvedModel("test-org/chat-model:primary", {
+        id: "test-org/chat-model:primary",
+        compat: { supportsTools: false },
+      } as never),
     ).toBeUndefined();
     expect(
       normalizeHuggingfaceResolvedModel("Qwen/Qwen3.5-9B:no-tools", {

@@ -225,9 +225,7 @@ export function normalizeHuggingfaceResolvedModel(
   modelId: string,
   model: ProviderRuntimeModel,
 ): ProviderRuntimeModel | undefined {
-  if (typeof model.compat?.supportsTools === "boolean") {
-    return undefined;
-  }
+  const configuredSupportsTools = model.compat?.supportsTools;
   const route = splitHuggingfaceRouteModelId(modelId);
   const support = huggingfaceToolSupportByModel.get(route.normalizedBaseModelId);
   const isPolicyRoute =
@@ -239,7 +237,9 @@ export function normalizeHuggingfaceResolvedModel(
         ? false
         : undefined
       : support?.byProvider.get(route.suffix);
-  if (supportsTools !== false) {
+  // Current route metadata owns route capability. A base-model default must not
+  // expose tools on a selected route that explicitly reports no tool support.
+  if (supportsTools !== false || configuredSupportsTools === false) {
     return undefined;
   }
   return {
