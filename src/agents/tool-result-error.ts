@@ -18,13 +18,29 @@ function readToolErrorField(error: object, key: string): unknown {
   }
 }
 
+function isCanonicalFileNotFoundLine(value: string): boolean {
+  const normalized = value.trim();
+  return (
+    /(?:^|:\s*)ENOENT(?=:\s|$)/u.test(normalized) ||
+    /(?:^|:\s*)spawn\b.+\sENOENT$/u.test(normalized) ||
+    /(?:^|:\s*|\[errno\s+\d+\]\s*)(?:no such file or directory|file not found)(?=$|:\s|,\s|\.\s*$|\s+\(|\s+@|\s+-\s)/iu.test(
+      normalized,
+    ) ||
+    /\(\s*(?:no such file or directory|file not found)\s*\)$/iu.test(normalized)
+  );
+}
+
+function isCanonicalFileNotFoundMessage(value: string): boolean {
+  return value.split(/\r?\n/u).some(isCanonicalFileNotFoundLine);
+}
+
 export function isFileNotFoundToolFailure(value: unknown): boolean {
   const pending = [value];
   const seen = new Set<unknown>();
   while (pending.length > 0 && seen.size < 12) {
     const current = pending.shift();
     if (typeof current === "string") {
-      if (/\bENOENT\b|no such file or directory|file not found/i.test(current)) {
+      if (isCanonicalFileNotFoundMessage(current)) {
         return true;
       }
       continue;

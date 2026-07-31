@@ -34,11 +34,11 @@ export function repairCodeModeToolInput(schema: unknown, value: unknown, depth =
   if (!isRecord(schema) || depth > 6) {
     return value;
   }
+  if (schemaAcceptsValue(schema, value)) {
+    return value;
+  }
   const composedBranches = readComposedSchemaBranches(schema);
   if (composedBranches?.length) {
-    if (schemaAcceptsValue(schema, value)) {
-      return value;
-    }
     for (const branch of composedBranches) {
       const repaired = repairCodeModeToolInput(branch, value, depth + 1);
       if (repaired !== value && schemaAcceptsValue(schema, repaired)) {
@@ -56,16 +56,16 @@ export function repairCodeModeToolInput(schema: unknown, value: unknown, depth =
       const trimmed = value.trim();
       if (/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/u.test(trimmed)) {
         const parsed = Number(trimmed);
-        if (
-          Number.isFinite(parsed) &&
-          (!types.includes("integer") || Number.isSafeInteger(parsed))
-        ) {
+        const typeAcceptsParsed =
+          types.includes("number") || (types.includes("integer") && Number.isSafeInteger(parsed));
+        if (Number.isFinite(parsed) && typeAcceptsParsed && schemaAcceptsValue(schema, parsed)) {
           return parsed;
         }
       }
     }
     if (types.includes("boolean") && (value === "true" || value === "false")) {
-      return value === "true";
+      const parsed = value === "true";
+      return schemaAcceptsValue(schema, parsed) ? parsed : value;
     }
     if (types.includes("array") || types.includes("object")) {
       try {
@@ -74,7 +74,8 @@ export function repairCodeModeToolInput(schema: unknown, value: unknown, depth =
           (types.includes("array") && Array.isArray(parsed)) ||
           (types.includes("object") && isRecord(parsed))
         ) {
-          return repairCodeModeToolInput(schema, parsed, depth + 1);
+          const repaired = repairCodeModeToolInput(schema, parsed, depth + 1);
+          return schemaAcceptsValue(schema, repaired) ? repaired : value;
         }
       } catch {
         // Only complete JSON containers are repaired.
@@ -89,7 +90,7 @@ export function repairCodeModeToolInput(schema: unknown, value: unknown, depth =
       changed ||= next !== entry;
       return next;
     });
-    return changed ? repaired : value;
+    return changed && schemaAcceptsValue(schema, repaired) ? repaired : value;
   }
   if (!isRecord(value) || !isRecord(schema.properties)) {
     return value;
@@ -124,5 +125,5 @@ export function repairCodeModeToolInput(schema: unknown, value: unknown, depth =
       writable: true,
     });
   }
-  return changed ? repaired : value;
+  return changed && schemaAcceptsValue(schema, repaired) ? repaired : value;
 }

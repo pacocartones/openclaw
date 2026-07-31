@@ -16,6 +16,36 @@ describe("isFileNotFoundToolFailure", () => {
         details: { status: "failed", error: "ENOENT: no such file or directory" },
       }),
     ).toBe(true);
+    expect(isFileNotFoundToolFailure(new Error("Error: ENOENT: no such file or directory"))).toBe(
+      true,
+    );
+    expect(isFileNotFoundToolFailure({ error: "read failed: ENOENT: missing.txt" })).toBe(true);
+    expect(isFileNotFoundToolFailure({ error: "spawn missing-command ENOENT" })).toBe(true);
+    expect(isFileNotFoundToolFailure({ error: "Error: spawn /bin/sh ENOENT" })).toBe(true);
+    expect(
+      isFileNotFoundToolFailure({
+        error:
+          "Error: spawn missing-command ENOENT\n    at ChildProcess.onexit (node:child_process)",
+      }),
+    ).toBe(true);
+    expect(
+      isFileNotFoundToolFailure({ error: "cat: missing.txt: No such file or directory" }),
+    ).toBe(true);
+    expect(
+      isFileNotFoundToolFailure({ error: "[Errno 2] No such file or directory: 'missing.txt'" }),
+    ).toBe(true);
+    expect(isFileNotFoundToolFailure({ error: "No such file or directory (os error 2)" })).toBe(
+      true,
+    );
+    expect(
+      isFileNotFoundToolFailure({ error: "No such file or directory @ rb_sysopen - missing.txt" }),
+    ).toBe(true);
+    expect(
+      isFileNotFoundToolFailure({
+        error: "java.io.FileNotFoundException: /tmp/missing (No such file or directory)",
+      }),
+    ).toBe(true);
+    expect(isFileNotFoundToolFailure({ error: "Error: file not found" })).toBe(true);
     expect(
       isFileNotFoundToolFailure({
         content: [{ type: "text", text: "File not found: missing.txt" }],
@@ -26,6 +56,31 @@ describe("isFileNotFoundToolFailure", () => {
   it("does not confuse other read failures with absence", () => {
     expect(isFileNotFoundToolFailure({ details: { error: "permission denied" } })).toBe(false);
     expect(isFileNotFoundToolFailure({ details: { status: "timed_out" } })).toBe(false);
+    expect(
+      isFileNotFoundToolFailure({
+        details: { error: "EACCES: permission denied, open '/tmp/file not found.txt'" },
+      }),
+    ).toBe(false);
+    expect(
+      isFileNotFoundToolFailure({
+        details: { error: "permission denied: /tmp/no such file or directory.txt" },
+      }),
+    ).toBe(false);
+    expect(
+      isFileNotFoundToolFailure({
+        details: { error: "permission denied: file not found.txt" },
+      }),
+    ).toBe(false);
+    expect(
+      isFileNotFoundToolFailure({
+        details: { error: "permission denied: /tmp/spawn missing-command ENOENT.txt" },
+      }),
+    ).toBe(false);
+    expect(
+      isFileNotFoundToolFailure({
+        details: { error: "permission denied: /tmp/(No such file or directory).txt" },
+      }),
+    ).toBe(false);
   });
 });
 

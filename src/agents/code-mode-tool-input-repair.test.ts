@@ -13,6 +13,22 @@ describe("repairCodeModeToolInput", () => {
 
   it("still repairs a string when the schema does not allow strings", () => {
     expect(repairCodeModeToolInput({ type: ["number", "null"] }, "42")).toBe(42);
+    expect(repairCodeModeToolInput({ type: ["number", "integer"] }, "1.5")).toBe(1.5);
+  });
+
+  it("rejects coercions that still violate the full schema", () => {
+    expect(repairCodeModeToolInput({ type: "integer", minimum: 100 }, "42")).toBe("42");
+    expect(
+      repairCodeModeToolInput(
+        {
+          type: "object",
+          properties: { requiredValue: { type: "string" } },
+          required: ["requiredValue"],
+          additionalProperties: false,
+        },
+        "{}",
+      ),
+    ).toBe("{}");
   });
 
   it.each([
