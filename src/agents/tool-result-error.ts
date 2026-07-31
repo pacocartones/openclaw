@@ -1,5 +1,8 @@
+import path from "node:path";
 import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
 import { formatErrorMessage } from "../infra/errors.js";
+import { escapeRegExp } from "../shared/regexp.js";
+import type { FileTarget } from "./tool-mutation.js";
 
 const TOOL_TIMEOUT_ERROR_CODES = new Set([
   "ERR_TIMEOUT",
@@ -18,11 +21,19 @@ function readToolErrorField(error: object, key: string): unknown {
   }
 }
 
+function readToolErrorKeys(error: object): string[] {
+  try {
+    return Object.keys(error);
+  } catch {
+    return [];
+  }
+}
+
 function isCanonicalFileNotFoundLine(value: string): boolean {
   const normalized = value.trim();
   return (
     /(?:^|:\s*)ENOENT(?=:\s|$)/u.test(normalized) ||
-    /(?:^|:\s*)spawn\b.+\sENOENT$/u.test(normalized) ||
+    /\(\s*ENOENT\s*\)(?=:\s|$)/u.test(normalized) ||
     /(?:^|:\s*|\[errno\s+\d+\]\s*)(?:no such file or directory|file not found)(?=$|:\s|,\s|\.\s*$|\s+\(|\s+@|\s+-\s)/iu.test(
       normalized,
     ) ||
@@ -30,45 +41,343 @@ function isCanonicalFileNotFoundLine(value: string): boolean {
   );
 }
 
-function isCanonicalFileNotFoundMessage(value: string): boolean {
-  return value.split(/\r?\n/u).some(isCanonicalFileNotFoundLine);
+function hasSpawnFailureMarker(value: string): boolean {
+  return value.split(/\r?\n/u).some((rawLine) => {
+    const line = rawLine.trim();
+    if (/^at\s/iu.test(line)) {
+      return false;
+    }
+    return (
+      /(?:^|[^/\\.'"\w])spawn(?:Sync)?\b(?![\\/])/iu.test(line) ||
+      /\b(?:node:)?child_process\.spawn(?:Sync)?\b/iu.test(line)
+    );
+  });
 }
 
-export function isFileNotFoundToolFailure(value: unknown): boolean {
-  const pending = [value];
-  const seen = new Set<unknown>();
-  while (pending.length > 0 && seen.size < 12) {
-    const current = pending.shift();
-    if (typeof current === "string") {
-      if (isCanonicalFileNotFoundMessage(current)) {
-        return true;
-      }
-      continue;
+function stripPathQuotes(value: string): string {
+  if (
+    value.length >= 2 &&
+    ((value.startsWith("'") && value.endsWith("'")) ||
+      (value.startsWith('"') && value.endsWith('"')))
+  ) {
+    return value.slice(1, -1);
+  }
+  return value;
+}
+
+function isWindowsAbsolutePath(value: string): boolean {
+  return /^[a-z]:[\\/]/iu.test(value) || value.startsWith("\\\\");
+}
+
+function normalizeComparablePath(value: string, cwd?: string): string {
+  const unquoted = stripPathQuotes(value);
+  if (!unquoted) {
+    return "";
+  }
+  const windowsPath = isWindowsAbsolutePath(unquoted) || (cwd ? isWindowsAbsolutePath(cwd) : false);
+  const implementation = windowsPath ? path.win32 : path;
+  const resolved =
+    cwd && !implementation.isAbsolute(unquoted)
+      ? implementation.resolve(cwd, unquoted)
+      : implementation.normalize(unquoted);
+  return resolved.replace(/\\/g, "/").replace(/\/+$/u, "");
+}
+
+function matchesFileTargetPath(value: string, target: FileTarget, cwd?: string): boolean {
+  const targetPath =
+    typeof target.path === "string" ? normalizeComparablePath(target.path, cwd) : "";
+  const candidatePath = normalizeComparablePath(value, cwd);
+  if (!targetPath || !candidatePath) {
+    return false;
+  }
+  if (
+    process.platform === "win32" ||
+    isWindowsAbsolutePath(candidatePath) ||
+    isWindowsAbsolutePath(targetPath)
+  ) {
+    return candidatePath.toLowerCase() === targetPath.toLowerCase();
+  }
+  return candidatePath === targetPath;
+}
+
+function extractExplicitPathLiterals(line: string): string[] {
+  const candidates = new Set<string>();
+  for (const match of line.matchAll(/(['"])([^'"]+)\1/gu)) {
+    candidates.add(match[2]);
+  }
+  for (const match of line.matchAll(/(?:^|\s|\(|=|\[)((?:\/|[a-z]:[\\/]|\\\\)[^\s'")\],;:]+)/giu)) {
+    candidates.add(match[1]);
+  }
+  if (
+    /\b(?:access|chmod|chown|copy|create|delete|link|load|lstat|mkdir|mkdtemp|open|read|readdir|readlink|realpath|remove|rename|rm|rmdir|save|scandir|stat|symlink|truncate|unlink|write)\b/iu.test(
+      line,
+    )
+  ) {
+    for (const match of line.matchAll(
+      /\b(?:access|chmod|chown|copy|create|delete|link|load|lstat|mkdir|mkdtemp|open|read|readdir|readlink|realpath|remove|rename|rm|rmdir|save|scandir|stat|symlink|truncate|unlink|write)\s+([^\s:'"(),]+)/giu,
+    )) {
+      candidates.add(match[1]);
     }
-    if (!current || typeof current !== "object" || seen.has(current)) {
-      continue;
+    for (const match of line.matchAll(/\bto\s+([^\s:'"(),]+)/giu)) {
+      candidates.add(match[1]);
     }
-    seen.add(current);
-    for (const key of ["code", "status"] as const) {
-      const normalized = normalizeOptionalLowercaseString(readToolErrorField(current, key));
-      if (normalized === "enoent" || normalized === "not_found" || normalized === "not-found") {
-        return true;
-      }
+  }
+  return [...candidates];
+}
+
+function findTargetPathInDiagnostic(
+  line: string,
+  target: FileTarget,
+  cwd?: string,
+): string | undefined {
+  const targetPath = typeof target.path === "string" ? target.path : "";
+  if (!targetPath.trim()) {
+    return undefined;
+  }
+  const normalizedTargetPath = normalizeComparablePath(targetPath, cwd);
+  const candidates = new Set([
+    targetPath,
+    normalizedTargetPath,
+    normalizedTargetPath.replace(/\//g, "\\"),
+  ]);
+  return [...candidates]
+    .filter(Boolean)
+    .toSorted((left, right) => right.length - left.length)
+    .find((candidate) => {
+      const escaped = escapeRegExp(candidate);
+      const suffix = `(?=$|[\\s'"),:;])`;
+      return [
+        new RegExp(
+          `\\b(?:access|lstat|open|readlink|realpath|scandir|stat|unlink)\\s+['"]?${escaped}${suffix}`,
+          "iu",
+        ),
+        new RegExp(
+          `(?:no such file or directory|file not found)\\s*:\\s*['"]?${escaped}${suffix}`,
+          "iu",
+        ),
+        new RegExp(`\\(ENOENT\\):\\s*${escaped}${suffix}`, "u"),
+        new RegExp(`-\\s*${escaped}${suffix}`, "u"),
+        new RegExp(`:\\s*${escaped}\\s+\\((?:no such file or directory|file not found)\\)`, "iu"),
+      ].some((pattern) => pattern.test(line));
+    });
+}
+
+function extractNotFoundDiagnosticPaths(
+  rawLine: string,
+  target: FileTarget,
+  cwd?: string,
+): string[] {
+  const line = rawLine.trim().replace(/^(?:error:\s*)+/giu, "");
+  const candidates = new Set<string>();
+  const exactTargetPath = findTargetPathInDiagnostic(line, target, cwd);
+  if (exactTargetPath) {
+    candidates.add(exactTargetPath);
+    const secondaryEvidenceLine = line.replace(exactTargetPath, "");
+    for (const candidate of extractExplicitPathLiterals(secondaryEvidenceLine)) {
+      candidates.add(candidate);
     }
-    for (const key of ["error", "message", "details", "cause", "reason", "content"] as const) {
-      const nested = readToolErrorField(current, key);
-      if (Array.isArray(nested)) {
-        pending.push(...nested);
-      } else if (nested !== undefined) {
-        pending.push(nested);
-      }
+    return [...candidates];
+  }
+  let primaryPath: string | undefined;
+  for (const pattern of [
+    /(?:no such file or directory|file not found),?\s*(?:access|lstat|open|readlink|realpath|scandir|stat|unlink)\s+['"]([^'"]+)['"]/iu,
+    /(?:no such file or directory|file not found),?\s*(?:access|lstat|open|readlink|realpath|scandir|stat|unlink)\s+(.+?)\s*$/iu,
+    /\b(?:access|lstat|open|readlink|realpath|scandir|stat|unlink)\s+(.+?)\s*:\s*(?:no such file or directory|file not found)(?:$|[,(])/iu,
+    /^[^:]+:\s*(.+?)\s*:\s*(?:no such file or directory|file not found)(?:$|[,(])/iu,
+    /(?:no such file or directory|file not found)\s*:\s*['"]?(.+?)['"]?$/iu,
+    /(?:no such file or directory|file not found)\s+@\s+\S+\s+-\s+(.+)$/iu,
+    /:\s*(.+?)\s+\((?:no such file or directory|file not found)\)\s*$/iu,
+    /\(ENOENT\):\s*(.+)$/u,
+    /(?:^|:\s*)ENOENT:\s*(?!no such file or directory\b)(.+)$/iu,
+  ]) {
+    const match = line.match(pattern);
+    if (match?.[1]) {
+      // Diagnostic grammars overlap (for example, Node's ENOENT prefix also
+      // resembles a command prefix). The first specific match owns the path.
+      candidates.add(match[1]);
+      primaryPath = match[1];
+      break;
     }
-    const text = readToolErrorField(current, "text");
-    if (typeof text === "string") {
-      pending.push(text);
+  }
+  const secondaryEvidenceLine = primaryPath ? line.replace(primaryPath, "") : line;
+  for (const candidate of extractExplicitPathLiterals(secondaryEvidenceLine)) {
+    candidates.add(candidate);
+  }
+  return [...candidates];
+}
+
+function hasDirectStructuredNotFoundIdentity(value: object): boolean {
+  for (const key of ["code", "status"] as const) {
+    const normalized = normalizeOptionalLowercaseString(readToolErrorField(value, key));
+    if (normalized === "enoent" || normalized === "not_found" || normalized === "not-found") {
+      return true;
     }
   }
   return false;
+}
+
+type FileNotFoundEvidence = {
+  ambiguousDiagnostic: boolean;
+  conflictingPath: boolean;
+  explicitConflictingPath: boolean;
+  explicitTargetedPath: boolean;
+  spawnFailure: boolean;
+  structuredIdentity: boolean;
+  targetedPath: boolean;
+  truncatedGraph: boolean;
+};
+
+function collectDiagnosticNotFoundEvidence(
+  value: string,
+  target: FileTarget,
+  cwd: string | undefined,
+  evidence: FileNotFoundEvidence,
+): void {
+  for (const line of value.split(/\r?\n/u)) {
+    const normalizedLine = line.trim();
+    if (!normalizedLine || /^at\s/iu.test(normalizedLine)) {
+      continue;
+    }
+    const explicitCandidates = extractExplicitPathLiterals(line);
+    let spawnComparableLine = line;
+    for (const candidate of [...explicitCandidates].toSorted(
+      (left, right) => right.length - left.length,
+    )) {
+      spawnComparableLine = spawnComparableLine.split(candidate).join("");
+    }
+    if (hasSpawnFailureMarker(spawnComparableLine)) {
+      evidence.spawnFailure = true;
+    }
+    const canonicalNotFound = isCanonicalFileNotFoundLine(line);
+    if (!canonicalNotFound) {
+      for (const candidate of explicitCandidates) {
+        if (matchesFileTargetPath(candidate, target, cwd)) {
+          evidence.explicitTargetedPath = true;
+        } else {
+          evidence.explicitConflictingPath = true;
+        }
+      }
+      evidence.ambiguousDiagnostic = true;
+      continue;
+    }
+    const candidates = extractNotFoundDiagnosticPaths(line, target, cwd);
+    for (const candidate of candidates) {
+      if (matchesFileTargetPath(candidate, target, cwd)) {
+        evidence.targetedPath = true;
+      } else {
+        evidence.conflictingPath = true;
+      }
+    }
+  }
+}
+
+function collectFileNotFoundEvidence(
+  value: unknown,
+  target: FileTarget,
+  cwd: string | undefined,
+  seen: Set<unknown>,
+  evidence: FileNotFoundEvidence,
+): void {
+  if (typeof value === "string") {
+    collectDiagnosticNotFoundEvidence(value, target, cwd, evidence);
+    return;
+  }
+  if (!value || typeof value !== "object" || seen.has(value)) {
+    return;
+  }
+  if (seen.size >= 12) {
+    evidence.truncatedGraph = true;
+    return;
+  }
+  seen.add(value);
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      collectFileNotFoundEvidence(entry, target, cwd, seen, evidence);
+    }
+    return;
+  }
+  const structuredIdentity = hasDirectStructuredNotFoundIdentity(value);
+  evidence.structuredIdentity ||= structuredIdentity;
+  const syscall = readToolErrorField(value, "syscall");
+  if (typeof syscall === "string" && hasSpawnFailureMarker(syscall)) {
+    evidence.spawnFailure = true;
+  }
+  const pathKeys = new Set([
+    "dest",
+    "destination",
+    "file",
+    "filename",
+    "path",
+    "source",
+    "src",
+    "target",
+  ]);
+  for (const key of pathKeys) {
+    const field = readToolErrorField(value, key);
+    if (typeof field !== "string" || !field.trim()) {
+      continue;
+    }
+    if (matchesFileTargetPath(field, target, cwd)) {
+      evidence.explicitTargetedPath = true;
+    } else {
+      evidence.explicitConflictingPath = true;
+    }
+  }
+  const keys = new Set([
+    ...readToolErrorKeys(value),
+    "cause",
+    "content",
+    "details",
+    "error",
+    "errors",
+    "message",
+    "reason",
+    "stderr",
+    "text",
+  ]);
+  for (const key of keys) {
+    if (
+      pathKeys.has(key) ||
+      key === "code" ||
+      key === "name" ||
+      key === "stack" ||
+      key === "status" ||
+      key === "syscall" ||
+      key === "type"
+    ) {
+      continue;
+    }
+    collectFileNotFoundEvidence(readToolErrorField(value, key), target, cwd, seen, evidence);
+  }
+}
+
+export function isFileTargetNotFoundToolFailure(
+  value: unknown,
+  target: FileTarget,
+  cwd?: string,
+): boolean {
+  const evidence: FileNotFoundEvidence = {
+    ambiguousDiagnostic: false,
+    conflictingPath: false,
+    explicitConflictingPath: false,
+    explicitTargetedPath: false,
+    spawnFailure: false,
+    structuredIdentity: false,
+    targetedPath: false,
+    truncatedGraph: false,
+  };
+  collectFileNotFoundEvidence(value, target, cwd, new Set(), evidence);
+  if (
+    (evidence.ambiguousDiagnostic &&
+      !(evidence.structuredIdentity && evidence.explicitTargetedPath)) ||
+    evidence.spawnFailure ||
+    evidence.conflictingPath ||
+    evidence.explicitConflictingPath ||
+    evidence.truncatedGraph
+  ) {
+    return false;
+  }
+  return evidence.targetedPath || (evidence.structuredIdentity && evidence.explicitTargetedPath);
 }
 
 function hasStructuredToolTimeoutIdentity(error: unknown): boolean {

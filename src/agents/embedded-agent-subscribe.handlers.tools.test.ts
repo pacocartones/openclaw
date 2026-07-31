@@ -1579,7 +1579,7 @@ describe("handleToolExecutionEnd mutating failure recovery", () => {
       args: { path: "old.ts" },
       isError: true,
       result: {
-        details: { status: "failed", code: "ENOENT", error: "file not found" },
+        details: { status: "failed", code: "ENOENT", path: "old.ts", error: "file not found" },
       },
     });
     expect(ctx.state.toolMetas.at(-1)).toMatchObject({
@@ -1588,6 +1588,88 @@ describe("handleToolExecutionEnd mutating failure recovery", () => {
       fileTarget: { path: "old.ts" },
       fileTargetAbsent: true,
     });
+  });
+
+  it("resolves apply_patch fallback targets against the run cwd", async () => {
+    const { ctx } = createTestContext();
+    ctx.params.cwd = "/workspace/project";
+
+    trustCoreToolCall("tool-apply-patch-parent-relative", "apply_patch");
+    await executeTool(ctx, {
+      toolName: "apply_patch",
+      toolCallId: "tool-apply-patch-parent-relative",
+      args: {
+        input: [
+          "*** Begin Patch",
+          "*** Update File: ../shared.ts",
+          "@@",
+          "-old",
+          "+new",
+          "*** End Patch",
+        ].join("\n"),
+      },
+      isError: true,
+      result: {
+        details: {
+          status: "failed",
+          error: "patch crashed",
+        },
+      },
+    });
+
+    expect(ctx.state.toolMetas.at(-1)).toMatchObject({
+      toolName: "apply_patch",
+      isError: true,
+      fileTargets: [{ path: "/workspace/shared.ts", expected: "present" }],
+    });
+  });
+
+  it("does not treat a missing read helper as target absence", async () => {
+    const { ctx } = createTestContext();
+
+    trustCoreToolCall("tool-read-helper-missing", "read");
+    await executeTool(ctx, {
+      toolName: "read",
+      toolCallId: "tool-read-helper-missing",
+      args: { path: "old.ts" },
+      isError: true,
+      result: {
+        details: {
+          status: "failed",
+          code: "ENOENT",
+          error: "Error: spawn missing-read-helper ENOENT",
+        },
+      },
+    });
+
+    expect(ctx.state.toolMetas.at(-1)).toMatchObject({
+      toolName: "read",
+      isError: true,
+      fileTarget: { path: "old.ts" },
+    });
+    expect(ctx.state.toolMetas.at(-1)?.fileTargetAbsent).toBeUndefined();
+  });
+
+  it("binds absolute not-found diagnostics to the execution cwd", async () => {
+    const { ctx } = createTestContext();
+    ctx.params.cwd = "/workspace";
+
+    trustCoreToolCall("tool-read-other-helper", "read");
+    await executeTool(ctx, {
+      toolName: "read",
+      toolCallId: "tool-read-other-helper",
+      args: { path: "helper-config" },
+      isError: true,
+      result: {
+        details: {
+          status: "failed",
+          code: "ENOENT",
+          error: "ENOENT: no such file or directory, open '/opt/helper-config'",
+        },
+      },
+    });
+
+    expect(ctx.state.toolMetas.at(-1)?.fileTargetAbsent).toBeUndefined();
   });
 
   it("marks middleware failures on the last tool error", async () => {
@@ -3130,7 +3212,7 @@ describe("handleToolExecutionEnd derived tool events", () => {
     expect(ctx.state.toolMetas.at(-1)).toMatchObject({
       toolName: "apply_patch",
       mutatingAction: true,
-      fileTargets: [{ path: "a.ts" }, { path: "b.ts" }],
+      fileTargets: [{ path: "a.ts" }, { path: "b.ts" }, { path: "c.ts", expected: "absent" }],
     });
   });
 });

@@ -3092,6 +3092,28 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
     ).toBe(true);
   });
 
+  it("treats a successful apply_patch deletion as authoritative absence", () => {
+    expect(
+      resolveCodeModeMutationVerificationState({
+        codeModeEngaged: true,
+        toolMetas: [
+          {
+            toolName: "write",
+            mutatingAction: true,
+            fileMutationExecutionStarted: true,
+            fileTarget: { path: "temporary.ts" },
+          },
+          {
+            toolName: "apply_patch",
+            mutatingAction: true,
+            fileMutationExecutionStarted: true,
+            fileTargets: [{ path: "temporary.ts", expected: "absent" }],
+          },
+        ],
+      }),
+    ).toEqual({ pendingTargets: [] });
+  });
+
   it("clears moved apply_patch targets with ordered absence and presence reads", () => {
     const mutation = {
       codeModeEngaged: true,

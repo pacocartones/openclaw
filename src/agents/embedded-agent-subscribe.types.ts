@@ -35,6 +35,8 @@ type ReasoningStreamPayload = Pick<
 export type SubscribeEmbeddedAgentSessionParams = {
   session: AgentSession;
   runId: string;
+  /** Canonical execution cwd used to bind file-observation evidence. */
+  cwd?: string;
   /** Immutable gateway lifecycle ownership for this execution. */
   lifecycleGeneration?: string;
   /** Originating message channel used for subsystem log attribution. */

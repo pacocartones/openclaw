@@ -223,7 +223,6 @@ describe("ollama provider models", () => {
     ).toEqual(
       expect.objectContaining({
         codeMode: "preferred",
-        codeModeNativeFileTools: false,
         supportsTools: true,
       }),
     );
@@ -242,7 +241,6 @@ describe("ollama provider models", () => {
   ])("does not prefer Code Mode for %s with capabilities %j", (modelId, capabilities) => {
     const compat = buildOllamaModelDefinition(modelId, undefined, capabilities).compat;
     expect(compat).not.toHaveProperty("codeMode");
-    expect(compat).not.toHaveProperty("codeModeNativeFileTools");
   });
 
   it("uses Modelfile num_ctx when it expands the discovered context window", async () => {

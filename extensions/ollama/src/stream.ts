@@ -1615,7 +1615,7 @@ function createRawOllamaStreamFn(
                 flushVisibleText(resolveVisibleContent(false));
               }
             }
-            if (chunk.message?.tool_calls?.length) {
+            if (chunk.message?.tool_calls?.length && !structuredToolFallbackActive) {
               // Kimi holds short visible prefixes until a terminal boundary;
               // settle them now so later tool indices cannot overwrite text.
               flushVisibleText(resolveVisibleContent(true));

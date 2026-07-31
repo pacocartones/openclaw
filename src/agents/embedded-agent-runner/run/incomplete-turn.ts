@@ -253,6 +253,26 @@ export function resolveCodeModeMutationVerificationState(
       addPendingTarget(uncertain ? { ...fallbackTarget, expected: "unknown" } : fallbackTarget);
     }
   };
+  const applySuccessfulMutationEvidence = (
+    targets: readonly FileTarget[] | undefined,
+    fallbackTarget?: FileTarget,
+  ) => {
+    if (targets === undefined) {
+      if (fallbackTarget) {
+        addPendingTarget(fallbackTarget);
+      }
+      return;
+    }
+    for (const target of targets) {
+      if (target.expected === "absent") {
+        // A successful patch deletion is authoritative final-state evidence.
+        // Clear stale present/unknown expectations instead of requiring a read.
+        pendingTargets = pendingTargets.filter((candidate) => !sameFileTarget(candidate, target));
+      } else {
+        addPendingTarget(target);
+      }
+    }
+  };
   const clearVerifiedTarget = (target: FileTarget | undefined, expected: "present" | "absent") => {
     if (!target) {
       return;
@@ -308,7 +328,7 @@ export function resolveCodeModeMutationVerificationState(
       tool.mutatingAction === true &&
       tool.fileMutationExecutionStarted === true
     ) {
-      addMutationEvidence(tool.fileTargets, tool.fileTarget);
+      applySuccessfulMutationEvidence(tool.fileTargets, tool.fileTarget);
       continue;
     }
     if ((toolName === "exec" || toolName === "wait") && tool.sideEffectFree === false) {

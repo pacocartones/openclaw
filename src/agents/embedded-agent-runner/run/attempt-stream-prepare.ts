@@ -245,6 +245,7 @@ export function prepareEmbeddedAttemptStream(input: {
     buildEmbeddedSubscriptionParams({
       session: input.activeSession,
       runId: attempt.runId,
+      cwd: attempt.cwd ?? attempt.workspaceDir,
       lifecycleGeneration: attempt.lifecycleGeneration,
       messageChannel: input.runtimeChannel,
       initialReplayState: attempt.initialReplayState,

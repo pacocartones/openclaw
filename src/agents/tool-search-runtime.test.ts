@@ -614,6 +614,33 @@ describe("Tool Search input schemas", () => {
     });
   });
 
+  it("publishes successful nested apply_patch deletions as authoritative absence", async () => {
+    const write = fakeTool("write", Type.Object({ path: Type.String(), content: Type.String() }));
+    const applyPatch = fakeTool("apply_patch", Type.Object({ input: Type.String() }));
+    applyPatch.execute = vi.fn(async () => ({
+      content: [{ type: "text" as const, text: "deleted" }],
+      details: {
+        summary: {
+          added: [],
+          modified: [],
+          deleted: ["temporary.ts"],
+        },
+      },
+    }));
+    const { runtime } = createRuntime([write, applyPatch]);
+
+    await runtime.call("write", { path: "temporary.ts", content: "temporary" });
+    expect(runtime.telemetry()).toMatchObject({
+      unverifiedMutationFileTargets: [{ path: "temporary.ts" }],
+    });
+
+    await runtime.call("apply_patch", { input: "*** Begin Patch\n*** End Patch" });
+    expect(runtime.telemetry()).toMatchObject({
+      successfulAbsenceObservationFileTargets: [{ path: "temporary.ts" }],
+      unverifiedMutationFileTargets: [],
+    });
+  });
+
   it("repairs schema-bounded Code Mode scalar and optional-null drift", async () => {
     const target = fakeTool(
       "small_model_input",

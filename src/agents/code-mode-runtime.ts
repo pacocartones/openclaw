@@ -222,27 +222,6 @@ export function isCodeModeEngagedForModel(
   return compat?.codeMode === "preferred";
 }
 
-/**
- * Resolves the lean native file surface independently from Code Mode
- * activation. Explicit catalog metadata wins; absent metadata preserves the
- * historical preferred-model behavior.
- */
-export function resolveCodeModeNativeFileToolsForModel(
-  model: { compat?: unknown } | undefined,
-): boolean {
-  if (model && !supportsModelTools(model)) {
-    return false;
-  }
-  const compat =
-    model?.compat && typeof model.compat === "object"
-      ? (model.compat as { codeMode?: unknown; codeModeNativeFileTools?: unknown })
-      : undefined;
-  if (typeof compat?.codeModeNativeFileTools === "boolean") {
-    return compat.codeModeNativeFileTools;
-  }
-  return compat?.codeMode === "preferred";
-}
-
 export function toToolSearchConfig(config: CodeModeConfig): ToolSearchConfig {
   return {
     enabled: true,

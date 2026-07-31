@@ -25,7 +25,6 @@ import {
   isCodeModeEngagedForModel,
   readCode,
   readRunId,
-  resolveCodeModeNativeFileToolsForModel,
   resolveCodeModeConfig,
   resolveCodeModeHeadlessConfig,
 } from "./code-mode-runtime.js";
@@ -43,10 +42,7 @@ import { optionalStringEnum } from "./schema/typebox.js";
 import type { ToolDefinition } from "./sessions/index.js";
 import { resolveSwarmConfig } from "./swarm-config.js";
 import { isAgentToolReplaySafe } from "./tool-replay-safety.js";
-import {
-  isDirectVisibleCatalogTool,
-  isDirectVisibleCoreCatalogTool,
-} from "./tool-search-catalog.js";
+import { isDirectVisibleCatalogTool } from "./tool-search-catalog.js";
 import {
   addClientToolsToToolCatalog,
   applyToolCatalogCompaction,
@@ -66,7 +62,6 @@ export {
   CodeModeHeadlessAbortError,
   CodeModeHeadlessTimeoutError,
   isCodeModeEngagedForModel,
-  resolveCodeModeNativeFileToolsForModel,
   runCodeModeScriptHeadless,
   resolveCodeModeConfig,
 };
@@ -394,7 +389,6 @@ export function applyCodeModeCatalog(params: {
   catalogRef?: ToolSearchCatalogRef;
   toolHookContext?: HookContext;
   directToolNames?: Iterable<string>;
-  directCoreToolNames?: Iterable<string>;
   codeModeSkills?: CodeModeToolContext["codeModeSkills"];
   forceEnabled?: boolean;
   forceReadOnlyTools?: boolean;
@@ -418,17 +412,13 @@ export function applyCodeModeCatalog(params: {
         tool.name !== TOOL_CALL_RAW_TOOL_NAME),
   );
   const directToolNames = new Set(params.directToolNames);
-  const directCoreToolNames = new Set(params.directCoreToolNames);
   const compacted = applyToolCatalogCompaction({
     ...params,
     tools,
     enabled: true,
     isVisibleControlTool: isCodeModeControlTool,
-    // Code mode never exposes core shell/file tools just because structured
-    // search does; only explicitly required, trusted direct tools may remain.
     isVisibleCatalogTool: (tool) =>
-      (directToolNames.has(tool.name) && isDirectVisibleCatalogTool(tool, directToolNames)) ||
-      isDirectVisibleCoreCatalogTool(tool, directCoreToolNames),
+      directToolNames.has(tool.name) && isDirectVisibleCatalogTool(tool, directToolNames),
     shouldCatalogTool: (tool) => !isCodeModeControlTool(tool),
   });
   // Only the catalog ref reflects the freshly compacted run catalog. Without it

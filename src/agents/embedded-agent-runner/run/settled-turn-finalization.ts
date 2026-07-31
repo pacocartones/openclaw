@@ -175,11 +175,15 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
       lastTurnTotal,
       terminalState,
     });
+    const finalizerToolSummary = finalizedPrepared.attemptToolSummary;
     prepared = {
       ...finalizedPrepared,
       // The finalizer intentionally runs without tools, but the completed
       // outer calls still belong to the same run's execution trace.
-      attemptToolSummary: finalizedPrepared.attemptToolSummary ?? settledAttemptToolSummary,
+      attemptToolSummary:
+        finalizerToolSummary && finalizerToolSummary.calls > 0
+          ? finalizerToolSummary
+          : settledAttemptToolSummary,
     };
     return {
       attempt,

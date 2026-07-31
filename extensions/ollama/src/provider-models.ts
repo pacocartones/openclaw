@@ -373,7 +373,6 @@ export function buildOllamaModelDefinition(
     ...(isPreferredOllamaCodeModeModel(modelId, capabilities)
       ? {
           codeMode: "preferred" as const,
-          codeModeNativeFileTools: false,
         }
       : {}),
   };

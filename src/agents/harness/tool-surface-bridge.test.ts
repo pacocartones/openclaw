@@ -292,7 +292,7 @@ describe("createAgentHarnessToolSurfaceRuntime", () => {
     }
   });
 
-  it("auto-engages a bridge-only preferred model without exposing native file tools", () => {
+  it("auto-engages a preferred lean model without exposing native file tools", () => {
     const runtime = createAgentHarnessToolSurfaceRuntime({
       config: {
         agents: { defaults: { experimental: { localModelLean: true } } },
@@ -302,7 +302,6 @@ describe("createAgentHarnessToolSurfaceRuntime", () => {
       model: {
         compat: {
           codeMode: "preferred",
-          codeModeNativeFileTools: false,
         },
       },
       modelToolsEnabled: true,

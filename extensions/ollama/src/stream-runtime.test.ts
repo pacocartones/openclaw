@@ -3015,7 +3015,7 @@ describe("createOllamaStreamFn", () => {
       .mockResolvedValueOnce({
         response: new Response(
           [
-            '{"model":"m","created_at":"t","message":{"role":"assistant","content":"{\\"name\\":\\"exec\\",\\"arguments\\":{\\"code\\":\\"return 1\\"}}"},"done":false}',
+            '{"model":"m","created_at":"t","message":{"role":"assistant","content":"{\\"name\\":\\"exec\\",\\"arguments\\":{\\"code\\":\\"return 1\\"}}","tool_calls":[{"function":{"name":"exec","arguments":{"code":"return 2"}}}]},"done":false}',
             '{"model":"m","created_at":"t","message":{"role":"assistant","content":""},"done":true,"prompt_eval_count":1,"eval_count":1}',
             "",
           ].join("\n"),
@@ -3054,6 +3054,23 @@ describe("createOllamaStreamFn", () => {
     expect(events.at(-1)?.type).toBe("done");
     expect(events.filter((event) => event.type === "error")).toHaveLength(0);
     expect(events.filter((event) => event.type.startsWith("text_"))).toHaveLength(0);
+    const doneEvent = events.at(-1);
+    expect(doneEvent).toMatchObject({
+      type: "done",
+      message: {
+        content: [
+          expect.objectContaining({
+            type: "toolCall",
+            name: "exec",
+            arguments: { code: "return 1" },
+          }),
+        ],
+      },
+    });
+    if (doneEvent?.type !== "done") {
+      throw new Error("expected Ollama structured fallback to finish");
+    }
+    expect(doneEvent.message.content).toHaveLength(1);
     const retryBody = getGuardedFetchJsonBody(fetchWithSsrFGuardMock, 1);
     expect(retryBody).not.toHaveProperty("tools");
     expect(JSON.stringify(retryBody.messages)).toContain("exactly one JSON object");
@@ -3066,7 +3083,7 @@ describe("createOllamaStreamFn", () => {
       required: ["name", "arguments"],
       additionalProperties: false,
     });
-    expect(events.at(-1)).toMatchObject({
+    expect(doneEvent).toMatchObject({
       type: "done",
       message: {
         stopReason: "toolUse",

@@ -105,7 +105,7 @@ import {
   type FileTarget,
 } from "./tool-mutation.js";
 import { normalizeToolName } from "./tool-policy.js";
-import { isFileNotFoundToolFailure, readToolResultDetails } from "./tool-result-error.js";
+import { isFileTargetNotFoundToolFailure, readToolResultDetails } from "./tool-result-error.js";
 import { createToolTerminalObserver } from "./tool-terminal-outcome.js";
 import {
   cancelAskUserPromptDelivery,
@@ -360,6 +360,7 @@ function buildToolCallSummary(
   meta: string | undefined,
   instanceReplaySafe: boolean,
   structuredReplaySafe: boolean,
+  cwd?: string,
 ): ToolCallSummary {
   const mutation = buildToolMutationState(toolName, args, meta);
   return {
@@ -372,7 +373,7 @@ function buildToolCallSummary(
     actionFingerprint: mutation.actionFingerprint,
     fileTarget: buildToolFileTarget(toolName, args),
     mutationFallbackFileTargets: mutation.mutatingAction
-      ? buildToolInputFileTargets(toolName, args)
+      ? buildToolInputFileTargets(toolName, args, cwd)
       : undefined,
   };
 }
@@ -1244,7 +1245,14 @@ export function handleToolExecutionStart(
       evt.replaySafe === true ||
       ctx.params.replaySafeToolNames?.has(rawToolName) === true ||
       ctx.params.replaySafeToolNames?.has(toolName) === true;
-    const callSummary = buildToolCallSummary(toolName, args, meta, instanceReplaySafe, false);
+    const callSummary = buildToolCallSummary(
+      toolName,
+      args,
+      meta,
+      instanceReplaySafe,
+      false,
+      ctx.params.cwd,
+    );
     const mutationOrder = resolveNativeMutationOrder(ctx.state);
     if (callSummary.mutatingAction) {
       mutationOrder.inFlight += 1;
@@ -1580,6 +1588,7 @@ export async function handleToolExecutionEnd(
     initialCallSummary?.meta,
     initialCallSummary?.instanceReplaySafe === true,
     structuredReplaySafe,
+    ctx.params.cwd,
   );
   // Only concrete core-owned workspace tools can provide file-mutation or
   // verification evidence. Plugin/client tools may shadow these names.
@@ -1593,7 +1602,7 @@ export async function handleToolExecutionEnd(
   const fileMutationExecutionStarted =
     trustedCoreTool && workspaceFileMutation && callSummary.mutatingAction && executionStarted;
   const resultFileTargets = buildToolResultFileTargets(toolName, sanitizedResult, {
-    includeDeleted: isToolError,
+    includeDeleted: true,
   });
   const mutationFileTargets = isToolError
     ? mergeFileTargets(resultFileTargets, callSummary.mutationFallbackFileTargets)
@@ -1619,7 +1628,7 @@ export async function handleToolExecutionEnd(
     initialCallSummary?.observedMutationCompletionVersion !== undefined &&
     mutationOrder.inFlight === 0 &&
     mutationOrder.completionVersion === initialCallSummary.observedMutationCompletionVersion &&
-    isFileNotFoundToolFailure(sanitizedResult);
+    isFileTargetNotFoundToolFailure(sanitizedResult, callSummary.fileTarget, ctx.params.cwd);
   // The Code Mode repair envelope proves this exec failed before any nested
   // tool dispatch, so it must not poison a later corrected attempt.
   const sideEffectFreeCodeModeFailure =

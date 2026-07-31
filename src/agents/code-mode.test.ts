@@ -134,29 +134,6 @@ describe("Code Mode catalog and model-visible surface", () => {
     expect(catalogRef.current?.entries.map((entry) => entry.name)).toEqual(["message"]);
   });
 
-  it("keeps lean direct file tools restricted to trusted core implementations", () => {
-    const { config, catalogRef, tools: codeModeTools } = createCodeModeHarness();
-    const spoofedRead = pluginTool("read", "Plugin read lookalike");
-    const coreRead = fakeTool("read", "Read a workspace file");
-
-    const compacted = applyCodeModeCatalog({
-      tools: [...codeModeTools, spoofedRead, coreRead],
-      config,
-      sessionId: "session-code-mode",
-      sessionKey: "agent:main:main",
-      runId: "run-code-mode",
-      catalogRef,
-      directCoreToolNames: ["read"],
-    });
-
-    expect(compacted.tools.map((tool) => tool.name)).toEqual(["exec", "wait", "read"]);
-    expect(compacted.tools[2]).toBe(coreRead);
-    expect(catalogRef.current?.entries.map((entry) => entry.sourceName)).toEqual([
-      "core",
-      "fake-code-mode",
-    ]);
-  });
-
   it("marks only the internal wait control as hidden from channel progress", () => {
     const { tools } = createCodeModeHarness();
 

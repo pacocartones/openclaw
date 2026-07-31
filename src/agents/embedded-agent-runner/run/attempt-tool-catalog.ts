@@ -52,7 +52,6 @@ export function prepareEmbeddedAttemptToolCatalog(input: {
   const { attempt, preparedToolBase } = input;
   const {
     codeModeControlsEnabledForRun,
-    codeModeNativeFileToolsEnabled,
     codeModeSkills,
     localModelLeanEnabled,
     localModelLeanPreserveToolNames,
@@ -105,7 +104,6 @@ export function prepareEmbeddedAttemptToolCatalog(input: {
     config: attempt.config,
     toolSearchRuntimeConfig,
     codeModeControlsEnabled: codeModeControlsEnabledForRun,
-    codeModeNativeFileToolsEnabled,
     toolSearchConfig,
     forceDirectMessageTool: preparedToolBase.forceDirectMessageTool,
     forceCodeModeControls: attempt.forceCodeModeTools,

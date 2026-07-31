@@ -419,6 +419,7 @@ describe("Code Mode restart-safe replay", () => {
     expect(completed).toMatchObject({
       status: "completed",
       value: "verified",
+      readOnly: true,
       replaySafe: true,
       sideEffectFree: true,
     });

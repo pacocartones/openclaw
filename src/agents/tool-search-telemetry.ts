@@ -9,7 +9,7 @@ import {
   isSameFileTarget,
   mergeFileTargets,
 } from "./tool-mutation.js";
-import { isFileNotFoundToolFailure, isToolResultError } from "./tool-result-error.js";
+import { isFileTargetNotFoundToolFailure, isToolResultError } from "./tool-result-error.js";
 import type {
   CatalogSource,
   ToolSearchCatalogEntry,
@@ -97,6 +97,27 @@ export class ToolSearchMutationTelemetry {
     }
   }
 
+  private completeAuthoritativeAbsence(target: FileTarget): void {
+    const state = this.resolveMutationTargetState(target);
+    state.completionVersion += 1;
+    for (let index = this.unverifiedMutationFileTargets.length - 1; index >= 0; index -= 1) {
+      if (this.isSameFileTarget(this.unverifiedMutationFileTargets[index]!, target)) {
+        this.unverifiedMutationFileTargets.splice(index, 1);
+      }
+    }
+    const observation: FileTarget = {
+      ...(target.path !== undefined ? { path: target.path } : {}),
+      ...(target.oldpath !== undefined ? { oldpath: target.oldpath } : {}),
+    };
+    if (
+      !this.successfulAbsenceObservationFileTargets.some((candidate) =>
+        this.isSameFileTarget(candidate, observation),
+      )
+    ) {
+      this.successfulAbsenceObservationFileTargets.push(observation);
+    }
+  }
+
   private recordObservation(
     observation: ToolSearchExecutionObservation,
     expected: "present" | "absent",
@@ -170,7 +191,7 @@ export class ToolSearchMutationTelemetry {
   ): void {
     const resultIsError = isToolResultError(result);
     const resultFileTargets = buildTrackableToolMutationState(entry, {})?.mutatingAction
-      ? buildToolResultFileTargets(entry.name, result, { includeDeleted: resultIsError })
+      ? buildToolResultFileTargets(entry.name, result, { includeDeleted: true })
       : undefined;
     if (resultIsError) {
       catalog.callFailureCount = (catalog.callFailureCount ?? 0) + 1;
@@ -183,7 +204,10 @@ export class ToolSearchMutationTelemetry {
       ) ?? []) {
         this.completeMutation({ ...target, expected: "unknown" }, false);
       }
-      if (isFileNotFoundToolFailure(result)) {
+      if (
+        observation.fileTarget &&
+        isFileTargetNotFoundToolFailure(result, observation.fileTarget, this.cwd)
+      ) {
         this.recordObservation(observation, "absent");
       }
       return;
@@ -193,7 +217,13 @@ export class ToolSearchMutationTelemetry {
     }
     if (resultFileTargets !== undefined) {
       for (const target of resultFileTargets) {
-        this.completeMutation(target, false);
+        if (target.expected === "absent") {
+          // A successful patch delete is authoritative for both this runtime
+          // and the outer Code Mode continuation.
+          this.completeAuthoritativeAbsence(target);
+        } else {
+          this.completeMutation(target, false);
+        }
       }
     }
     this.recordObservation(observation, "present");
@@ -211,7 +241,10 @@ export class ToolSearchMutationTelemetry {
     for (const target of observation?.mutationFallbackFileTargets ?? []) {
       this.completeMutation({ ...target, expected: "unknown" }, false);
     }
-    if (observation && isFileNotFoundToolFailure(error)) {
+    if (
+      observation?.fileTarget &&
+      isFileTargetNotFoundToolFailure(error, observation.fileTarget, this.cwd)
+    ) {
       this.recordObservation(observation, "absent");
     }
   }

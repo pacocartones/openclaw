@@ -305,6 +305,7 @@ export type EmbeddedAgentSubscribeContext = {
 type ToolHandlerParams = Pick<
   SubscribeEmbeddedAgentSessionParams,
   | "runId"
+  | "cwd"
   | "onBlockReplyFlush"
   | "onAgentEvent"
   | "onToolStreamBoundary"

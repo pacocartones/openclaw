@@ -77,7 +77,6 @@ export function createAgentHarnessToolSurfaceRuntime(params: {
   const forceDirectMessageTool = messageToolOwnsVisibleReply(params);
   const {
     codeModeControlsEnabled,
-    codeModeNativeFileToolsEnabled,
     toolSearchControlsEnabled,
     toolSearchConfig,
     toolSearchRuntimeConfig,
@@ -160,7 +159,6 @@ export function createAgentHarnessToolSurfaceRuntime(params: {
       config: params.config,
       toolSearchRuntimeConfig,
       codeModeControlsEnabled,
-      codeModeNativeFileToolsEnabled,
       toolSearchConfig,
       forceDirectMessageTool,
       sessionId: params.sessionId,

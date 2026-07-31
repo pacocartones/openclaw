@@ -1,7 +1,10 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { Value } from "typebox/value";
 
-function schemaAcceptsValue(schema: object, value: unknown): boolean {
+function schemaAcceptsValue(schema: unknown, value: unknown): boolean {
+  if (!isRecord(schema)) {
+    return false;
+  }
   try {
     return Value.Check(schema as never, value);
   } catch {
@@ -14,20 +17,6 @@ function readComposedSchemaBranches(schema: Record<string, unknown>): unknown[] 
     return schema.oneOf;
   }
   return Array.isArray(schema.anyOf) ? schema.anyOf : undefined;
-}
-
-function schemaAllowsNull(schema: unknown): boolean {
-  if (!isRecord(schema)) {
-    return false;
-  }
-  const types = Array.isArray(schema.type) ? schema.type : [schema.type];
-  if (types.includes("null")) {
-    return true;
-  }
-  return [
-    ...(Array.isArray(schema.anyOf) ? schema.anyOf : []),
-    ...(Array.isArray(schema.oneOf) ? schema.oneOf : []),
-  ].some((candidate) => schemaAllowsNull(candidate));
 }
 
 export function repairCodeModeToolInput(schema: unknown, value: unknown, depth = 0): unknown {
@@ -108,7 +97,7 @@ export function repairCodeModeToolInput(schema: unknown, value: unknown, depth =
       current === null &&
       propertySchema !== undefined &&
       !required.has(key) &&
-      !schemaAllowsNull(propertySchema)
+      !schemaAcceptsValue(propertySchema, null)
     ) {
       changed = true;
       continue;

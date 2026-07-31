@@ -4,7 +4,6 @@ import {
   enforceResultLimit,
   isCodeModeEngagedForModel,
   prepareSource,
-  resolveCodeModeNativeFileToolsForModel,
   resolveCodeModeConfig,
 } from "./code-mode-runtime.js";
 
@@ -68,12 +67,6 @@ describe("Code Mode master switch resolution", () => {
   const chatOnlyPreferredModel = {
     compat: { codeMode: "preferred", supportsTools: false },
   };
-  const bridgeOnlyPreferredModel = {
-    compat: { codeMode: "preferred", codeModeNativeFileTools: false },
-  };
-  const nativeCapableModel = {
-    compat: { codeMode: "capable", codeModeNativeFileTools: true },
-  };
 
   it.each([
     {
@@ -122,26 +115,6 @@ describe("Code Mode master switch resolution", () => {
     { name: "auto skips a missing model", enabled: "auto", model: undefined, engaged: false },
   ] as const)("$name", ({ enabled, model, engaged }) => {
     expect(isCodeModeEngagedForModel({ enabled }, model)).toBe(engaged);
-  });
-
-  it.each([
-    { name: "preferred tool-capable model", model: preferredModel, preferred: true },
-    {
-      name: "preferred bridge-only model",
-      model: bridgeOnlyPreferredModel,
-      preferred: false,
-    },
-    {
-      name: "explicit native capable model",
-      model: nativeCapableModel,
-      preferred: true,
-    },
-    { name: "capable model", model: capableModel, preferred: false },
-    { name: "unflagged model", model: unflaggedModel, preferred: false },
-    { name: "preferred chat-only model", model: chatOnlyPreferredModel, preferred: false },
-    { name: "missing model", model: undefined, preferred: false },
-  ] as const)("selects native file tools only for $name", ({ model, preferred }) => {
-    expect(resolveCodeModeNativeFileToolsForModel(model)).toBe(preferred);
   });
 });
 

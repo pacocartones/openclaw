@@ -133,27 +133,4 @@ describe("ModelsConfigSchema", () => {
 
     expect(result.success).toBe(true);
   });
-
-  it("accepts independent Code Mode activation and native file-tool compatibility", () => {
-    const result = ModelsConfigSchema.safeParse({
-      providers: {
-        ollama: {
-          baseUrl: "http://127.0.0.1:11434",
-          api: "ollama",
-          models: [
-            {
-              id: "devstral-small-2:24b",
-              name: "Devstral Small 2",
-              compat: {
-                codeMode: "preferred",
-                codeModeNativeFileTools: false,
-              },
-            },
-          ],
-        },
-      },
-    });
-
-    expect(result.success).toBe(true);
-  });
 });

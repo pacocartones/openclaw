@@ -63,11 +63,6 @@ export type ModelCatalogCompatConfig = {
   supportsTools?: boolean;
   /** Code-mode tier consumed by `tools.codeMode.enabled: "auto"`; absent means "capable". */
   codeMode?: "preferred" | "capable";
-  /**
-   * Whether engaged Code Mode may expose bounded native file tools for lean
-   * local runs. Absent preserves the `codeMode: "preferred"` default.
-   */
-  codeModeNativeFileTools?: boolean;
   requiresStringContent?: boolean;
   strictMessageKeys?: boolean;
   toolSchemaProfile?: string;

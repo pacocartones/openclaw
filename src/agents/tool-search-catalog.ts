@@ -241,19 +241,6 @@ export function isDirectVisibleCatalogTool(
   );
 }
 
-export function isDirectVisibleCoreCatalogTool(
-  tool: AnyAgentTool,
-  directToolNames: ReadonlySet<string>,
-): boolean {
-  const classified = classifyTool(tool);
-  return (
-    classified.source === "openclaw" &&
-    classified.sourceName === "core" &&
-    directToolNames.has(tool.name) &&
-    isCoreCodingSurfaceToolName(tool.name)
-  );
-}
-
 export function registerHeadlessToolSearchCatalog(params: {
   catalogRef: ToolSearchCatalogRef;
   tools: readonly AnyAgentTool[];

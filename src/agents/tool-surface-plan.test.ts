@@ -118,7 +118,6 @@ describe("applyAgentToolSurfaceCatalog", () => {
       config,
       toolSearchRuntimeConfig: plan.toolSearchRuntimeConfig,
       codeModeControlsEnabled: plan.codeModeControlsEnabled,
-      codeModeNativeFileToolsEnabled: plan.codeModeNativeFileToolsEnabled,
       toolSearchConfig: plan.toolSearchConfig,
       forceDirectMessageTool: false,
       catalogRef,
@@ -146,7 +145,6 @@ describe("applyAgentToolSurfaceCatalog", () => {
       config,
       toolSearchRuntimeConfig: plan.toolSearchRuntimeConfig,
       codeModeControlsEnabled: plan.codeModeControlsEnabled,
-      codeModeNativeFileToolsEnabled: plan.codeModeNativeFileToolsEnabled,
       toolSearchConfig: plan.toolSearchConfig,
       forceDirectMessageTool: false,
       forceCodeModeControls: true,
@@ -155,72 +153,6 @@ describe("applyAgentToolSurfaceCatalog", () => {
 
     expect(result.tools.map((tool) => tool.name)).toEqual(["exec", "wait"]);
     expect(result.catalogToolCount).toBe(1);
-  });
-
-  it("keeps bounded native file tools visible for lean Code Mode", () => {
-    const config: OpenClawConfig = {
-      agents: { defaults: { experimental: { localModelLean: true } } },
-      tools: { codeMode: true },
-    };
-    const plan = resolveAgentToolSurfacePlan({
-      ...basePlanParams,
-      config,
-      model: { compat: { codeMode: "preferred" } },
-    });
-    const catalogRef = createToolSearchCatalogRef();
-    const result = applyAgentToolSurfaceCatalog({
-      tools: [
-        ...createCodeModeTools({ config, catalogRef, executeTool }),
-        ...["read", "edit", "write", "apply_patch", "hidden_target"].map(createStubTool),
-      ],
-      config,
-      toolSearchRuntimeConfig: plan.toolSearchRuntimeConfig,
-      codeModeControlsEnabled: plan.codeModeControlsEnabled,
-      codeModeNativeFileToolsEnabled: plan.codeModeNativeFileToolsEnabled,
-      toolSearchConfig: plan.toolSearchConfig,
-      forceDirectMessageTool: false,
-      catalogRef,
-    });
-
-    expect(result.tools.map((tool) => tool.name)).toEqual([
-      "exec",
-      "wait",
-      "read",
-      "edit",
-      "write",
-      "apply_patch",
-    ]);
-    expect(result.catalogToolCount).toBe(5);
-  });
-
-  it("keeps only native read visible during lean Code Mode verification", () => {
-    const config: OpenClawConfig = {
-      agents: { defaults: { experimental: { localModelLean: true } } },
-      tools: { codeMode: true },
-    };
-    const plan = resolveAgentToolSurfacePlan({
-      ...basePlanParams,
-      config,
-      model: { compat: { codeMode: "preferred" } },
-    });
-    const catalogRef = createToolSearchCatalogRef();
-    const result = applyAgentToolSurfaceCatalog({
-      tools: [
-        ...createCodeModeTools({ config, catalogRef, executeTool, forceReadOnlyTools: true }),
-        ...["read", "edit", "write", "apply_patch", "hidden_target"].map(createStubTool),
-      ],
-      config,
-      toolSearchRuntimeConfig: plan.toolSearchRuntimeConfig,
-      codeModeControlsEnabled: plan.codeModeControlsEnabled,
-      codeModeNativeFileToolsEnabled: plan.codeModeNativeFileToolsEnabled,
-      toolSearchConfig: plan.toolSearchConfig,
-      forceDirectMessageTool: false,
-      forceReadOnlyTools: true,
-      catalogRef,
-    });
-
-    expect(result.tools.map((tool) => tool.name)).toEqual(["exec", "wait", "read"]);
-    expect(result.catalogToolCount).toBe(5);
   });
 
   it("keeps file tools behind the bridge for unflagged lean models", () => {
@@ -242,19 +174,17 @@ describe("applyAgentToolSurfaceCatalog", () => {
       config,
       toolSearchRuntimeConfig: plan.toolSearchRuntimeConfig,
       codeModeControlsEnabled: plan.codeModeControlsEnabled,
-      codeModeNativeFileToolsEnabled: plan.codeModeNativeFileToolsEnabled,
       toolSearchConfig: plan.toolSearchConfig,
       forceDirectMessageTool: false,
       catalogRef,
     });
 
     expect(plan.codeModeControlsEnabled).toBe(true);
-    expect(plan.codeModeNativeFileToolsEnabled).toBe(false);
     expect(result.tools.map((tool) => tool.name)).toEqual(["exec", "wait"]);
     expect(result.catalogToolCount).toBe(4);
   });
 
-  it("keeps file tools behind the bridge for an explicitly bridge-only preferred model", () => {
+  it("keeps file tools behind the bridge for an auto-engaged preferred lean model", () => {
     const config: OpenClawConfig = {
       agents: { defaults: { experimental: { localModelLean: true } } },
       tools: { codeMode: "auto" },
@@ -262,12 +192,7 @@ describe("applyAgentToolSurfaceCatalog", () => {
     const plan = resolveAgentToolSurfacePlan({
       ...basePlanParams,
       config,
-      model: {
-        compat: {
-          codeMode: "preferred",
-          codeModeNativeFileTools: false,
-        },
-      },
+      model: { compat: { codeMode: "preferred" } },
     });
     const catalogRef = createToolSearchCatalogRef();
     const result = applyAgentToolSurfaceCatalog({
@@ -278,14 +203,12 @@ describe("applyAgentToolSurfaceCatalog", () => {
       config,
       toolSearchRuntimeConfig: plan.toolSearchRuntimeConfig,
       codeModeControlsEnabled: plan.codeModeControlsEnabled,
-      codeModeNativeFileToolsEnabled: plan.codeModeNativeFileToolsEnabled,
       toolSearchConfig: plan.toolSearchConfig,
       forceDirectMessageTool: false,
       catalogRef,
     });
 
     expect(plan.codeModeControlsEnabled).toBe(true);
-    expect(plan.codeModeNativeFileToolsEnabled).toBe(false);
     expect(result.tools.map((tool) => tool.name)).toEqual(["exec", "wait"]);
     expect(result.catalogToolCount).toBe(4);
   });
@@ -300,7 +223,6 @@ describe("applyAgentToolSurfaceCatalog", () => {
       config,
       toolSearchRuntimeConfig: plan.toolSearchRuntimeConfig,
       codeModeControlsEnabled: plan.codeModeControlsEnabled,
-      codeModeNativeFileToolsEnabled: plan.codeModeNativeFileToolsEnabled,
       toolSearchConfig: plan.toolSearchConfig,
       forceDirectMessageTool: false,
       catalogRef: createToolSearchCatalogRef(),
@@ -322,7 +244,6 @@ describe("applyAgentToolSurfaceCatalog", () => {
       config,
       toolSearchRuntimeConfig: plan.toolSearchRuntimeConfig,
       codeModeControlsEnabled: plan.codeModeControlsEnabled,
-      codeModeNativeFileToolsEnabled: plan.codeModeNativeFileToolsEnabled,
       toolSearchConfig: plan.toolSearchConfig,
       forceDirectMessageTool: false,
       catalogRef: createToolSearchCatalogRef(),

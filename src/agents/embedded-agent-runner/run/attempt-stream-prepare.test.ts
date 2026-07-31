@@ -91,6 +91,44 @@ describe("prepareEmbeddedAttemptStream", () => {
     mocks.runBeforeFinalizeHook.mockResolvedValue({ action: "continue" });
   });
 
+  it("passes the effective execution cwd to tool lifecycle handlers", () => {
+    prepareEmbeddedAttemptStream({
+      attempt: {
+        runId: "run-cwd",
+        sessionId: "session-cwd",
+        sessionKey: "agent:main:main",
+        workspaceDir: "/workspace",
+      } as never,
+      activeSession: { agent: {}, isStreaming: false } as never,
+      hookRunner: undefined as never,
+      hookAgentId: "main",
+      diagnosticTrace: {} as never,
+      clientToolCallSlots: [],
+      toolSearchTargetTranscriptProjections: [],
+      isReplaySafeTool: () => false,
+      runAbortController: new AbortController(),
+      abortRun: vi.fn(),
+      markExternalAbort: vi.fn(),
+      getRunState: () => ({
+        aborted: false,
+        promptError: undefined,
+        timedOut: false,
+        yieldDetected: false,
+      }),
+      hasDeliveredSourceReply: () => false,
+      markSourceReplyDelivered: vi.fn(),
+      onBlockReply: vi.fn(),
+      onBlockReplyFlush: vi.fn(),
+      sandboxSessionKey: "agent:main:main",
+      builtinToolNames: new Set(),
+      replaySafeToolNames: new Set(),
+    });
+
+    expect(mocks.buildSubscriptionParams).toHaveBeenCalledWith(
+      expect.objectContaining({ cwd: "/workspace" }),
+    );
+  });
+
   it("uses the persisted assistant entry id and closes steering during revision settlement", async () => {
     let resolveHook: ((value: { action: "revise"; reason: string }) => void) | undefined;
     mocks.runBeforeFinalizeHook.mockImplementation(

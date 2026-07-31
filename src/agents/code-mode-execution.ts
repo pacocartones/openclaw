@@ -648,6 +648,7 @@ export async function runWait(params: {
           failurePhase: "bridge" as const,
           bridgeDispatchStarted: true,
           output: takeUndeliveredCodeModeRunOutput(state),
+          readOnly: state.readOnly,
           replaySafe: state.replaySafe,
           sideEffectFree: state.sideEffectFree,
           telemetry: telemetry(state.runtime),
@@ -662,6 +663,7 @@ export async function runWait(params: {
         runId: state.runId,
         reason: codeModeWaitingReason(pending.length > 0 ? pending : state.pending),
         pendingToolCalls: pendingToolCalls(pending.length > 0 ? pending : state.pending),
+        readOnly: state.readOnly,
         replaySafe: state.replaySafe,
         sideEffectFree: state.sideEffectFree,
         output: takeUndeliveredCodeModeRunOutput(state),
@@ -697,7 +699,7 @@ export async function runWait(params: {
     );
     const output = [...state.output, ...result.output];
     enforceOutputLimit(output, state.config);
-    return await settleCodeModeResult({
+    const settled = await settleCodeModeResult({
       result,
       output,
       replaySafe: state.replaySafe,
@@ -718,6 +720,7 @@ export async function runWait(params: {
       signal: params.signal,
       onUpdate: params.onUpdate,
     });
+    return { ...settled, readOnly: state.readOnly };
   } catch (error) {
     state.sideEffectFree = mergePendingBridgeSideEffectFree(state.sideEffectFree, state.pending);
     // After ownership leaves activeRuns, worker/limit failures must cancel
@@ -732,6 +735,7 @@ export async function runWait(params: {
       failurePhase: "bridge" as const,
       bridgeDispatchStarted: true,
       output: takeUndeliveredCodeModeRunOutput(state),
+      readOnly: state.readOnly,
       replaySafe: state.replaySafe,
       sideEffectFree: state.sideEffectFree,
       telemetry: telemetry(state.runtime),

@@ -59,6 +59,25 @@ describe("repairCodeModeToolInput", () => {
     ).toEqual({ limit: 5 });
   });
 
+  it.each([
+    { const: null },
+    { enum: [null, "auto"] },
+    { allOf: [{ type: "null" }, { const: null }] },
+  ])("preserves optional nulls accepted by the full property schema", (nullableProperty) => {
+    expect(
+      repairCodeModeToolInput(
+        {
+          type: "object",
+          properties: {
+            limit: { type: "integer" },
+            marker: nullableProperty,
+          },
+        },
+        { limit: "5", marker: null },
+      ),
+    ).toEqual({ limit: 5, marker: null });
+  });
+
   it("preserves already valid and ambiguous composed values", () => {
     expect(repairCodeModeToolInput({ anyOf: [{ type: "string" }, { type: "number" }] }, "42")).toBe(
       "42",
