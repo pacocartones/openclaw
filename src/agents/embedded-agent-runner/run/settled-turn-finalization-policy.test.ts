@@ -179,13 +179,13 @@ describe("settled Code Mode continuation policy", () => {
     expect(consumeForceRestartSafeToolsForNextAttempt(state, true)).toBe(true);
   });
 
-  it("releases terminal read-only tools after the verification attempt", () => {
+  it("keeps terminal read-only tools latched across continuation attempts", () => {
     const state = createEmbeddedRunTerminalRetryState();
     state.forceReadOnlyToolsForNextAttempt = true;
 
     expect(consumeForceReadOnlyToolsForNextAttempt(state, false)).toBe(true);
-    expect(state.forceReadOnlyToolsForNextAttempt).toBe(false);
-    expect(consumeForceReadOnlyToolsForNextAttempt(state, false)).toBe(false);
+    expect(state.forceReadOnlyToolsForNextAttempt).toBe(true);
+    expect(consumeForceReadOnlyToolsForNextAttempt(state, false)).toBe(true);
     expect(consumeForceReadOnlyToolsForNextAttempt(state, true)).toBe(true);
   });
 });

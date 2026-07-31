@@ -44,12 +44,10 @@ export function consumeForceRestartSafeToolsForNextAttempt(
   return runAlreadyForcesRestartSafeTools || state.forceRestartSafeToolsForNextAttempt;
 }
 
-/** Consume the one-attempt read-only restriction armed by terminal verification. */
+/** Read the run-latched read-only restriction armed by terminal verification. */
 export function consumeForceReadOnlyToolsForNextAttempt(
   state: EmbeddedRunTerminalRetryState,
   runAlreadyForcesReadOnlyTools: boolean,
 ): boolean {
-  const terminalVerificationForcesReadOnlyTools = state.forceReadOnlyToolsForNextAttempt;
-  state.forceReadOnlyToolsForNextAttempt = false;
-  return runAlreadyForcesReadOnlyTools || terminalVerificationForcesReadOnlyTools;
+  return runAlreadyForcesReadOnlyTools || state.forceReadOnlyToolsForNextAttempt;
 }

@@ -1442,6 +1442,73 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
     expectNoWarnMessageWith("settled post-tool turn lacked a final answer");
   });
 
+  it("keeps targetless mutation continuations read-only until the run finishes", async () => {
+    const emptyStopAssistant = {
+      role: "assistant",
+      stopReason: "stop",
+      provider: "huggingface",
+      model: "Qwen/Qwen3.5-9B",
+      content: [],
+    } as unknown as NonNullable<EmbeddedRunAttemptResult["lastAssistant"]>;
+    mockedClassifyFailoverReason.mockReturnValue(null);
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce(
+      makeAttemptResult({
+        assistantTexts: [],
+        codeModeEngaged: true,
+        toolMetas: [{ toolName: "exec", replaySafe: false, sideEffectFree: false }],
+        replayMetadata: { hadPotentialSideEffects: true, replaySafe: false },
+        currentAttemptReplayMetadata: { hadPotentialSideEffects: true, replaySafe: false },
+        itemLifecycle: { startedCount: 1, completedCount: 1, activeCount: 0 },
+        lastAssistant: emptyStopAssistant,
+        currentAttemptAssistant: emptyStopAssistant,
+      }),
+    );
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce(
+      makeAttemptResult({
+        assistantTexts: [],
+        codeModeEngaged: true,
+        toolMetas: [{ toolName: "exec", replaySafe: true, sideEffectFree: true }],
+        replayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
+        currentAttemptReplayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
+        itemLifecycle: { startedCount: 1, completedCount: 1, activeCount: 0 },
+        lastAssistant: emptyStopAssistant,
+        currentAttemptAssistant: emptyStopAssistant,
+      }),
+    );
+    const finalAssistant = {
+      role: "assistant",
+      stopReason: "stop",
+      provider: "huggingface",
+      model: "Qwen/Qwen3.5-9B",
+      content: [{ type: "text", text: "Verified the completed external action." }],
+    } as unknown as NonNullable<EmbeddedRunAttemptResult["lastAssistant"]>;
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce(
+      makeAttemptResult({
+        assistantTexts: ["Verified the completed external action."],
+        lastAssistant: finalAssistant,
+        currentAttemptAssistant: finalAssistant,
+        currentAttemptCompletedAssistant: finalAssistant,
+      }),
+    );
+    mockedBuildEmbeddedRunPayloads
+      .mockReturnValueOnce([])
+      .mockReturnValueOnce([])
+      .mockReturnValueOnce([{ text: "Verified the completed external action." }]);
+
+    const result = await runEmbeddedAgent({
+      ...overflowBaseRunParams,
+      provider: "huggingface",
+      model: "Qwen/Qwen3.5-9B",
+      runId: "run-targetless-mutation-continuation",
+    });
+
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(3);
+    expect(result.payloads?.[0]?.text).toBe("Verified the completed external action.");
+    expect(runAttemptCall(1).forceReadOnlyTools).toBe(true);
+    expect(runAttemptCall(2).forceReadOnlyTools).toBe(true);
+    expectWarnMessageWith("settled Code Mode work stopped before final verification");
+  });
+
   it("surfaces an error when Code Mode mutation verification retries are exhausted", async () => {
     const unverifiedAssistant = {
       role: "assistant",
