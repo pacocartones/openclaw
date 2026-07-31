@@ -886,7 +886,7 @@ function removeBridgeTargetsFromOuterSequence(
     if (boundary !== "exec" && boundary !== "wait") {
       continue;
     }
-    const bridgeStart = boundaryIndex - bridge.length;
+    const bridgeStart: number = boundaryIndex - bridge.length;
     if (bridgeStart < 0) {
       continue;
     }
