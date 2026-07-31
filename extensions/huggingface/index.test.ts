@@ -83,4 +83,8 @@ describe("huggingface plugin", () => {
   it("registers the Hugging Face stream wrapper", () => {
     expect(registerProvider().wrapStreamFn).toBeTypeOf("function");
   });
+
+  it("registers route-aware resolved-model normalization", () => {
+    expect(registerProvider().normalizeResolvedModel).toBeTypeOf("function");
+  });
 });

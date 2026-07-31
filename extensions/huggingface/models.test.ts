@@ -8,6 +8,10 @@ import {
   HUGGINGFACE_MODEL_CATALOG,
   isHuggingfacePolicyLocked,
 } from "./api.js";
+import {
+  normalizeHuggingfaceResolvedModel,
+  resetHuggingfaceToolSupportSnapshotForTest,
+} from "./models.js";
 
 const ORIGINAL_VITEST = process.env.VITEST;
 const ORIGINAL_NODE_ENV = process.env.NODE_ENV;
@@ -37,6 +41,7 @@ function responseFromReader(reader: ReadableStreamDefaultReader<Uint8Array>): Re
 afterEach(() => {
   restoreEnv("VITEST", ORIGINAL_VITEST);
   restoreEnv("NODE_ENV", ORIGINAL_NODE_ENV);
+  resetHuggingfaceToolSupportSnapshotForTest();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -185,6 +190,11 @@ describe("huggingface models", () => {
                 supports_tools: true,
                 context_length: 65536,
               },
+              {
+                provider: "secondary",
+                status: "live",
+                supports_tools: false,
+              },
             ],
           },
           {
@@ -199,6 +209,21 @@ describe("huggingface models", () => {
             providers: [{ provider: "fallback", status: "live" }],
           },
           {
+            id: "test-org/no-tools-model",
+            providers: [
+              {
+                provider: "primary",
+                status: "live",
+                supports_tools: false,
+              },
+              {
+                provider: "secondary",
+                status: "live",
+                supports_tools: false,
+              },
+            ],
+          },
+          {
             id: "Qwen/Qwen3.5-9B",
             providers: [
               {
@@ -206,6 +231,11 @@ describe("huggingface models", () => {
                 status: "live",
                 supports_tools: true,
                 context_length: 262144,
+              },
+              {
+                provider: "no-tools",
+                status: "live",
+                supports_tools: false,
               },
             ],
           },
@@ -234,33 +264,123 @@ describe("huggingface models", () => {
 
     const models = await discoverHuggingfaceModels("hf_test_token");
 
-    expect(models.find((model) => model.id === "test-org/tool-model")?.compat).toEqual({
-      supportsTools: true,
-    });
+    expect(models.find((model) => model.id === "test-org/tool-model")?.compat).toBeUndefined();
     expect(models.find((model) => model.id === "test-org/tool-model")?.contextWindow).toBe(65536);
-    expect(models.find((model) => model.id === "test-org/chat-model")?.compat).toEqual({
-      supportsTools: false,
-    });
+    expect(models.find((model) => model.id === "test-org/chat-model")?.compat).toBeUndefined();
     expect(models.find((model) => model.id === "test-org/unknown-model")?.compat).toBeUndefined();
+    expect(models.find((model) => model.id === "test-org/no-tools-model")?.compat).toBeUndefined();
     expect(models.find((model) => model.id === "Qwen/Qwen3.5-9B")).toMatchObject({
       reasoning: true,
       compat: {
-        supportsTools: true,
         thinkingFormat: "qwen-chat-template",
       },
     });
     expect(models.find((model) => model.id === "Qwen/Qwen3-4B-Instruct-2507")).toMatchObject({
       reasoning: false,
-      compat: { supportsTools: true },
+    });
+
+    const baseModel = { id: "test-org/chat-model" } as never;
+    expect(normalizeHuggingfaceResolvedModel("test-org/chat-model", baseModel)).toBeUndefined();
+    expect(
+      normalizeHuggingfaceResolvedModel("test-org/chat-model:primary", baseModel),
+    ).toMatchObject({
+      compat: { supportsTools: false },
+    });
+    expect(
+      normalizeHuggingfaceResolvedModel("test-org/tool-model:primary", baseModel),
+    ).toBeUndefined();
+    expect(
+      normalizeHuggingfaceResolvedModel("test-org/tool-model:secondary", baseModel),
+    ).toMatchObject({
+      compat: { supportsTools: false },
+    });
+    expect(
+      normalizeHuggingfaceResolvedModel("test-org/chat-model:unknown", baseModel),
+    ).toBeUndefined();
+    for (const suffix of ["cheapest", "fastest", "preferred"]) {
+      expect(
+        normalizeHuggingfaceResolvedModel(`test-org/chat-model:${suffix}`, baseModel),
+      ).toBeUndefined();
+      expect(
+        normalizeHuggingfaceResolvedModel(`test-org/no-tools-model:${suffix}`, baseModel),
+      ).toMatchObject({
+        compat: { supportsTools: false },
+      });
+    }
+    expect(normalizeHuggingfaceResolvedModel("test-org/no-tools-model", baseModel)).toMatchObject({
+      compat: { supportsTools: false },
+    });
+    expect(
+      normalizeHuggingfaceResolvedModel("test-org/chat-model:primary", {
+        id: "test-org/chat-model:primary",
+        compat: { supportsTools: true },
+      } as never),
+    ).toBeUndefined();
+    expect(
+      normalizeHuggingfaceResolvedModel("Qwen/Qwen3.5-9B:no-tools", {
+        id: "Qwen/Qwen3.5-9B:no-tools",
+        compat: { thinkingFormat: "qwen-chat-template" },
+      } as never),
+    ).toMatchObject({
+      compat: {
+        supportsTools: false,
+        thinkingFormat: "qwen-chat-template",
+      },
     });
     expect(cancel).not.toHaveBeenCalled();
     expect(releaseLock).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps the last successful route capability snapshot after discovery fails", async () => {
+    process.env.VITEST = "false";
+    process.env.NODE_ENV = "development";
+    const successfulResponse = new Response(
+      JSON.stringify({
+        data: [
+          {
+            id: "test-org/chat-model",
+            providers: [
+              {
+                provider: "primary",
+                status: "live",
+                supports_tools: false,
+              },
+            ],
+          },
+        ],
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(successfulResponse)
+        .mockResolvedValueOnce(
+          new Response("unavailable", {
+            status: 503,
+            headers: { "Content-Type": "application/json" },
+          }),
+        ),
+    );
+
+    await discoverHuggingfaceModels("hf_test_token");
+    await discoverHuggingfaceModels("hf_test_token");
+
+    expect(
+      normalizeHuggingfaceResolvedModel("test-org/chat-model:primary", {
+        id: "test-org/chat-model:primary",
+      } as never),
+    ).toMatchObject({
+      compat: { supportsTools: false },
+    });
+  });
+
   describe("isHuggingfacePolicyLocked", () => {
-    it("returns true for :cheapest and :fastest refs", () => {
+    it("returns true for router policy refs", () => {
       expect(isHuggingfacePolicyLocked("huggingface/deepseek-ai/DeepSeek-R1:cheapest")).toBe(true);
       expect(isHuggingfacePolicyLocked("huggingface/deepseek-ai/DeepSeek-R1:fastest")).toBe(true);
+      expect(isHuggingfacePolicyLocked("huggingface/deepseek-ai/DeepSeek-R1:preferred")).toBe(true);
     });
 
     it("returns false for base ref and :provider refs", () => {
