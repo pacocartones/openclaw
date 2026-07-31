@@ -1,7 +1,7 @@
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { notifyListeners, registerListener } from "../shared/listeners.js";
 
-export type AgentRunContextRetirementEvent = {
+type AgentRunContextRetirementEvent = {
   runId: string;
   lifecycleGeneration: string;
   reason: "cleared" | "replaced" | "reset" | "swept";
@@ -18,7 +18,7 @@ function getAgentRunContextRetirementListeners() {
   );
 }
 
-export function notifyAgentRunContextRetired(event: AgentRunContextRetirementEvent): void {
+function notifyAgentRunContextRetired(event: AgentRunContextRetirementEvent): void {
   notifyListeners(getAgentRunContextRetirementListeners(), event);
 }
 
