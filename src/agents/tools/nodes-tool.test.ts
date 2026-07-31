@@ -739,6 +739,7 @@ describe("createNodesTool screen_record duration guardrails", () => {
     const result = await tool.execute("call-1", {
       action: "photos_latest",
       node: "macbook",
+      limit: 2,
     });
 
     expect(result?.details).toEqual({
@@ -762,6 +763,37 @@ describe("createNodesTool screen_record duration guardrails", () => {
       },
     });
     expect(JSON.stringify(result?.content ?? [])).not.toContain("MEDIA:");
+  });
+
+  it("validates every latest photo before saving any partial response", async () => {
+    gatewayMocks.callGatewayTool.mockResolvedValue({
+      payload: {
+        photos: [
+          { base64: "ZmFrZQ==", format: "jpg", width: 800, height: 600 },
+          { format: "jpg", width: 1024, height: 768 },
+        ],
+      },
+    });
+    nodesCameraMocks.parseCameraSnapPayload
+      .mockReturnValueOnce({
+        base64: "ZmFrZQ==",
+        format: "jpg",
+        width: 800,
+        height: 600,
+      })
+      .mockImplementationOnce(() => {
+        throw new Error("invalid camera.snap payload");
+      });
+    const tool = createNodesTool();
+
+    await expect(
+      tool.execute("call-partial-photos", {
+        action: "photos_latest",
+        node: "macbook",
+        limit: 2,
+      }),
+    ).rejects.toThrow("invalid photos.latest payload");
+    expect(nodesCameraMocks.writeCameraPayloadToFile).not.toHaveBeenCalled();
   });
 
   it("rejects invalid photos_latest limit values before gateway invoke", async () => {
