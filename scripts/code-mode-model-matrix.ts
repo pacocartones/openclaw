@@ -1227,6 +1227,15 @@ export function buildCodeModeMatrixAgentEnv(
   if (model.startsWith("ollama/") && !env.OLLAMA_API_KEY) {
     env.OLLAMA_API_KEY = "ollama-local";
   }
+  // The matrix exercises a real child CLI even when its caller is a Vitest
+  // live lane. Test-runtime markers suppress structured stdout in that child.
+  delete env.VITEST;
+  delete env.VITEST_MODE;
+  delete env.VITEST_POOL_ID;
+  delete env.VITEST_WORKER_ID;
+  if (env.NODE_ENV === "test") {
+    delete env.NODE_ENV;
+  }
   delete env.NODE_COMPILE_CACHE;
   return env;
 }

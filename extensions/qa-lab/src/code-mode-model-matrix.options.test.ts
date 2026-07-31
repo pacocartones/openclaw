@@ -246,6 +246,24 @@ describe("Code Mode model matrix provider setup", () => {
     });
   });
 
+  it("runs child CLIs without inherited Vitest runtime markers", () => {
+    const env = buildCodeModeMatrixAgentEnv("openai/gpt-5.6", "/runtime", "/state", {
+      NODE_ENV: "test",
+      VITEST: "true",
+      VITEST_MODE: "RUN",
+      VITEST_POOL_ID: "pool",
+      VITEST_WORKER_ID: "worker",
+      UNRELATED_VALUE: "kept",
+    });
+
+    expect(env).toMatchObject({ UNRELATED_VALUE: "kept" });
+    expect(env.NODE_ENV).toBeUndefined();
+    expect(env.VITEST).toBeUndefined();
+    expect(env.VITEST_MODE).toBeUndefined();
+    expect(env.VITEST_POOL_ID).toBeUndefined();
+    expect(env.VITEST_WORKER_ID).toBeUndefined();
+  });
+
   it("pins runtime and sampling controls through supported model config", () => {
     expect(buildCodeModeMatrixConfig("openai/gpt-5.6-sol")).toEqual({
       agents: {
