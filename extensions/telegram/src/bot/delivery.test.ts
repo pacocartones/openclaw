@@ -69,7 +69,7 @@ vi.mock("grammy", () => ({
   InputFile: class {
     constructor(
       public buffer: Buffer,
-      public fileName?: string,
+      public filename?: string,
     ) {}
   },
   GrammyError: class GrammyError extends Error {
@@ -930,6 +930,32 @@ describe("deliverReplies", () => {
       caption: "hi <b>boss</b>",
       parse_mode: "HTML",
     });
+  });
+
+  it.each([
+    { contentType: "image/png", filename: "image.png", method: "sendPhoto" },
+    { contentType: "video/quicktime", filename: "video.mov", method: "sendVideo" },
+    { contentType: "audio/mpeg", filename: "audio.mp3", method: "sendAudio" },
+    { contentType: "application/pdf", filename: "file.pdf", method: "sendDocument" },
+    { contentType: "image/gif", filename: "animation.gif", method: "sendAnimation" },
+    { contentType: "application/x-custom", filename: "file.bin", method: "sendDocument" },
+  ])("preserves MIME-derived filenames for streaming $contentType", async (testCase) => {
+    const sendMedia = vi.fn().mockResolvedValue({
+      message_id: 2,
+      chat: { id: "123" },
+    });
+    loadWebMedia.mockResolvedValueOnce({
+      buffer: Buffer.from("media"),
+      contentType: testCase.contentType,
+    });
+
+    await deliverWith({
+      replies: [{ mediaUrl: "https://example.com/media", text: "caption" }],
+      runtime: createRuntime(),
+      bot: createBot({ [testCase.method]: sendMedia }),
+    });
+
+    expect(firstMockCallArg(sendMedia, 1)).toMatchObject({ filename: testCase.filename });
   });
 
   it("falls back to a plain media caption when Telegram rejects caption HTML", async () => {

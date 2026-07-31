@@ -44,6 +44,7 @@ import {
   canonicalizeTelegramPresentationPayload,
   resolveTelegramInteractiveTextFallback,
 } from "../interactive-fallback.js";
+import { resolveTelegramOutboundMediaFilename } from "../outbound-media.js";
 import type { TelegramPromptContextProjectionSequence } from "../prompt-context-projection.js";
 import type { TelegramRichBlocksDegradationReason } from "../rich-block-model.js";
 import {
@@ -53,6 +54,7 @@ import {
   type TelegramInputRichMessage,
 } from "../rich-message.js";
 import { isTelegramHtmlParseError } from "../rich-plain-fallback.js";
+import { isTelegramPhotoLimitError } from "../send-error-predicates.js";
 import { buildInlineKeyboard, reactMessageTelegram } from "../send.js";
 import { resolveTelegramTargetChatType } from "../targets.js";
 import { resolveTelegramVoiceSend } from "../voice.js";
@@ -72,7 +74,6 @@ import {
 
 const VOICE_FORBIDDEN_MARKER = "VOICE_MESSAGES_FORBIDDEN";
 const CAPTION_TOO_LONG_RE = /caption is too long/i;
-const TELEGRAM_PHOTO_LIMIT_ERROR_RE = /\b(?:PHOTO_INVALID_DIMENSIONS|PHOTO_TOO_BIG)\b/i;
 const GrammyErrorCtor: typeof GrammyError | undefined =
   typeof GrammyError === "function" ? GrammyError : undefined;
 
@@ -309,13 +310,6 @@ function isCaptionTooLong(err: unknown): boolean {
   return CAPTION_TOO_LONG_RE.test(formatErrorMessage(err));
 }
 
-function isTelegramPhotoLimitError(err: unknown): boolean {
-  if (GrammyErrorCtor && err instanceof GrammyErrorCtor) {
-    return TELEGRAM_PHOTO_LIMIT_ERROR_RE.test(err.description);
-  }
-  return TELEGRAM_PHOTO_LIMIT_ERROR_RE.test(formatErrorMessage(err));
-}
-
 function resolveVoiceFallbackText(reply: ReplyPayload): string | undefined {
   if (reply.text?.trim()) {
     return reply.text;
@@ -458,7 +452,12 @@ async function deliverMediaReply(params: {
       contentType: media.contentType,
       fileName: media.fileName,
     });
-    const fileName = media.fileName ?? (isGif ? "animation.gif" : "file");
+    const fileName = resolveTelegramOutboundMediaFilename({
+      fileName: media.fileName,
+      contentType: media.contentType,
+      kind,
+      isGif,
+    });
     const file = new InputFile(media.buffer, fileName);
     const { caption, followUpText } = splitTelegramCaption(
       isFirstMedia ? (params.reply.text ?? undefined) : undefined,
