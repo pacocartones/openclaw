@@ -1,5 +1,5 @@
-import { afterAll, afterEach, describe, expect, it } from "vitest";
-import { cleanupTempDirs, makeTempDir } from "../../test/helpers/temp-dir.js";
+import { afterEach, describe, expect, it } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
@@ -8,7 +8,7 @@ import { listAuditEvents } from "./audit-event-store.js";
 import type { AuditEventInput } from "./audit-event-types.js";
 import { createAuditEventWriter } from "./audit-event-writer.js";
 
-const tempDirs: string[] = [];
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 function input(): AuditEventInput {
   return {
@@ -29,13 +29,9 @@ afterEach(() => {
   closeOpenClawStateDatabaseForTest();
 });
 
-afterAll(() => {
-  cleanupTempDirs(tempDirs);
-});
-
 describe("audit event worker", () => {
   it("returns immediately under SQLite contention and flushes before stop", async () => {
-    const stateDir = makeTempDir(tempDirs, "openclaw-audit-writer-");
+    const stateDir = tempDirs.make("openclaw-audit-writer-");
     const database = { env: { OPENCLAW_STATE_DIR: stateDir } };
     const errors: string[] = [];
     const writer = createAuditEventWriter({ stateDir, onError: (error) => errors.push(error) });
@@ -53,7 +49,7 @@ describe("audit event worker", () => {
   });
 
   it("accepts bounded final records after the live queue fills", async () => {
-    const stateDir = makeTempDir(tempDirs, "openclaw-audit-writer-final-");
+    const stateDir = tempDirs.make("openclaw-audit-writer-final-");
     const database = { env: { OPENCLAW_STATE_DIR: stateDir } };
     const errors: string[] = [];
     const writer = createAuditEventWriter({
