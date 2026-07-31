@@ -1022,6 +1022,36 @@ describe("deliverReplies", () => {
     },
   );
 
+  it("keeps recovered photo-limit failures quiet after a plain-caption retry", async () => {
+    const runtime = createRuntime();
+    const sendPhoto = vi
+      .fn()
+      .mockRejectedValueOnce(createHtmlParseError("sendPhoto"))
+      .mockRejectedValueOnce(
+        new Error(
+          "GrammyError: Call to 'sendPhoto' failed! (400: Bad Request: PHOTO_INVALID_DIMENSIONS)",
+        ),
+      );
+    const sendDocument = vi.fn().mockResolvedValue({
+      message_id: 9,
+      chat: { id: "123" },
+    });
+
+    mockMediaLoad("photo.jpg", "image/jpeg", "image");
+
+    await deliverWith({
+      replies: [{ mediaUrl: "https://example.com/photo.jpg", text: "hi **boss**" }],
+      runtime,
+      bot: createBot({ sendPhoto, sendDocument }),
+    });
+
+    expect(sendPhoto).toHaveBeenCalledTimes(2);
+    expectRecordFields(mockCallArg(sendPhoto, 1, 2), { caption: "hi **boss**" });
+    expect(mockCallArg(sendPhoto, 1, 2)).not.toHaveProperty("parse_mode");
+    expect(sendDocument).toHaveBeenCalledOnce();
+    expect(runtime.error).not.toHaveBeenCalled();
+  });
+
   it("does not fall back to a document for unrelated Telegram photo failures", async () => {
     const runtime = createRuntime();
     const sendPhoto = vi.fn().mockRejectedValueOnce(createThreadNotFoundError("sendPhoto"));

@@ -376,7 +376,10 @@ async function sendTelegramCaptionedMediaWithFallback<T>(params: {
         err,
       )}`,
     );
-    return await sendMedia(buildPlainCaptionParams(params.requestParams, params.plainCaption));
+    return await sendMedia(
+      buildPlainCaptionParams(params.requestParams, params.plainCaption),
+      params.shouldLog,
+    );
   }
 }
 
