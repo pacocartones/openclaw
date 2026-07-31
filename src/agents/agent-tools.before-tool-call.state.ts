@@ -93,6 +93,11 @@ export function recordCodeModeControlToolCall(toolCallId: string, runId?: string
   codeModeControlToolCallIds.add(buildAdjustedParamsKey({ runId, toolCallId }));
 }
 
+/** Inspect Code Mode control identity without consuming end-of-call ownership. */
+export function peekCodeModeControlToolCall(toolCallId: string, runId?: string): boolean {
+  return codeModeControlToolCallIds.has(buildAdjustedParamsKey({ runId, toolCallId }));
+}
+
 export function consumeCodeModeControlToolCall(toolCallId: string, runId?: string): boolean {
   const key = buildAdjustedParamsKey({ runId, toolCallId });
   const codeModeControl = codeModeControlToolCallIds.has(key);

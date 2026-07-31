@@ -2038,6 +2038,64 @@ describe("handleToolExecutionEnd mutating failure recovery", () => {
     });
   });
 
+  it("does not let an overlapping Code Mode read verify a concurrent mutation", async () => {
+    const { ctx } = createTestContext();
+
+    trustCodeModeControlCall("tool-code-mode-overlap-read", "exec");
+    await startTool(ctx, {
+      toolName: "exec",
+      toolCallId: "tool-code-mode-overlap-read",
+      args: { code: 'return await tools.read({ path: "result.txt" });' },
+    });
+    trustCodeModeControlCall("tool-code-mode-overlap-write", "exec");
+    await startTool(ctx, {
+      toolName: "exec",
+      toolCallId: "tool-code-mode-overlap-write",
+      args: { code: 'return await tools.write({ path: "result.txt", content: "done" });' },
+    });
+    await endTool(ctx, {
+      toolName: "exec",
+      toolCallId: "tool-code-mode-overlap-write",
+      isError: false,
+      result: {
+        details: {
+          status: "completed",
+          sideEffectFree: false,
+          telemetry: {
+            unverifiedMutationFileTargets: [{ path: "result.txt" }],
+          },
+        },
+      },
+    });
+    await endTool(ctx, {
+      toolName: "exec",
+      toolCallId: "tool-code-mode-overlap-read",
+      isError: false,
+      result: {
+        details: {
+          status: "completed",
+          sideEffectFree: true,
+          telemetry: {
+            successfulObservationFileTargets: [{ path: "result.txt" }],
+            unverifiedMutationFileTargets: [],
+          },
+        },
+      },
+    });
+
+    const readMeta = ctx.state.toolMetas.find(
+      (entry) => entry.toolName === "exec" && entry.sideEffectFree === true,
+    );
+    expect(readMeta).not.toHaveProperty("codeModeSuccessfulObservationFileTargets");
+    expect(ctx.state.toolMetas).toContainEqual(
+      expect.objectContaining({
+        toolName: "exec",
+        sideEffectFree: false,
+        codeModeUnverifiedMutationFileTargets: [{ path: "result.txt" }],
+      }),
+    );
+  });
+
   it("does not trust Code Mode result fields from a shadowed exec tool", async () => {
     const { ctx } = createTestContext();
 
