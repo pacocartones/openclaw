@@ -112,7 +112,9 @@ function resolveUniqueGuestToolByArguments(
       if (matched) {
         return undefined;
       }
-      matched = { name, arguments: validated, nativeEligible: true };
+      // The model selected exec, not this outer tool name. Keep inference on
+      // the guest bridge so a shadowing plugin/client tool cannot acquire it.
+      matched = { name, arguments: validated, nativeEligible: false };
     } catch {
       // Non-matching schemas are expected; only one exact match is repairable.
     }

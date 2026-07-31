@@ -28,9 +28,9 @@ import {
   codeModeWaitingReason,
   createPendingBridgeStates,
   disposeCodeModeRun,
+  mergePendingBridgeSideEffectFree,
   pendingBridgeRequestsSideEffectFree,
   pendingBridgeRequestsReplaySafe,
-  pendingBridgeStatesSideEffectFree,
   pendingBridgeStatesForSettlement,
   pendingToolCalls,
   removeExpiredRuns,
@@ -377,7 +377,7 @@ async function settleCodeModeResult(params: {
         remainingMs,
         params.signal,
       );
-      sideEffectFree = sideEffectFree && pendingBridgeStatesSideEffectFree(pending);
+      sideEffectFree = mergePendingBridgeSideEffectFree(sideEffectFree, pending);
       const resumeBudgetMs = ready
         ? usableResumeBudgetMs(settleDeadline, params.config)
         : undefined;
@@ -518,7 +518,7 @@ async function settleCodeModeResult(params: {
           onUpdate: params.onUpdate,
         });
         pending.push(...newPendingStates);
-        sideEffectFree = sideEffectFree && pendingBridgeStatesSideEffectFree(pending);
+        sideEffectFree = mergePendingBridgeSideEffectFree(sideEffectFree, pending);
         return storeSnapshotState({
           runId: activeRunId,
           replayId: params.codeModeReplayId,
@@ -634,7 +634,7 @@ export async function runWait(params: {
       Math.max(1, deadlineMs - Date.now()),
       params.signal,
     );
-    state.sideEffectFree = state.sideEffectFree && pendingBridgeStatesSideEffectFree(state.pending);
+    state.sideEffectFree = mergePendingBridgeSideEffectFree(state.sideEffectFree, state.pending);
     const resumeBudgetMs = ready ? usableResumeBudgetMs(deadlineMs, state.config) : undefined;
     if (!ready || resumeBudgetMs === undefined) {
       // An aborted wait drops the suspended run: nothing will resume it, and
@@ -719,7 +719,7 @@ export async function runWait(params: {
       onUpdate: params.onUpdate,
     });
   } catch (error) {
-    state.sideEffectFree = state.sideEffectFree && pendingBridgeStatesSideEffectFree(state.pending);
+    state.sideEffectFree = mergePendingBridgeSideEffectFree(state.sideEffectFree, state.pending);
     // After ownership leaves activeRuns, worker/limit failures must cancel
     // every transferred loser; there is no parked snapshot left to own it.
     if (!activeRuns.has(state.runId)) {

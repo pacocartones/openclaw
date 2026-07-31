@@ -5,6 +5,7 @@ import {
   activeRuns,
   disposeAllCodeModeRuns,
   disposeCodeModeRun,
+  mergePendingBridgeSideEffectFree,
   pendingBridgeStatesSideEffectFree,
   reserveActiveRunSlot,
   resumingRunIds,
@@ -87,8 +88,13 @@ describe("Code Mode worker lifecycle", () => {
     };
 
     expect(pendingBridgeStatesSideEffectFree([pending])).toBe(false);
+    expect(mergePendingBridgeSideEffectFree(true, [pending])).toBe(true);
     pending.executionBoundaryClassified = true;
     expect(pendingBridgeStatesSideEffectFree([pending])).toBe(true);
+    expect(mergePendingBridgeSideEffectFree(true, [pending])).toBe(true);
+    pending.knownSideEffectFree = false;
+    pending.potentialSideEffectStarted = true;
+    expect(mergePendingBridgeSideEffectFree(true, [pending])).toBe(false);
   });
 
   it("cancels every suspended run, releases capacity, and clears its expiry timer", () => {

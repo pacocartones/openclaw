@@ -291,6 +291,15 @@ export function pendingBridgeStatesSideEffectFree(pending: readonly PendingBridg
   );
 }
 
+export function mergePendingBridgeSideEffectFree(
+  current: boolean,
+  pending: readonly PendingBridgeState[],
+): boolean {
+  // An unclassified async hook is not evidence of a side effect. Only the
+  // final execution boundary can permanently clear this monotonic flag.
+  return current && !pending.some((request) => request.potentialSideEffectStarted);
+}
+
 export function pendingBridgeRequestSideEffectFree(
   request: PendingBridgeRequest,
   runtime: ToolSearchRuntime,

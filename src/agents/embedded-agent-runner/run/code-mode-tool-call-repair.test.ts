@@ -287,7 +287,7 @@ describe("Code Mode outer guest tool-call repair", () => {
     );
   });
 
-  it("routes malformed exec arguments to a matching visible native tool", async () => {
+  it("keeps inferred malformed exec arguments on the guest bridge", async () => {
     const message = {
       role: "assistant",
       content: [{ type: "toolCall", name: "exec", arguments: { path: "facts.txt" } }],
@@ -302,7 +302,15 @@ describe("Code Mode outer guest tool-call repair", () => {
       ),
     ).resolves.toEqual({
       role: "assistant",
-      content: [{ type: "toolCall", name: "read", arguments: { path: "facts.txt" } }],
+      content: [
+        {
+          type: "toolCall",
+          name: "exec",
+          arguments: {
+            code: TRANSLATED_READ_CODE,
+          },
+        },
+      ],
     });
   });
 
