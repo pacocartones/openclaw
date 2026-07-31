@@ -76,6 +76,7 @@ export type EmbeddedAgentSubscribeState = {
   toolMetas: Array<{
     toolName?: string;
     meta?: string;
+    durationMs?: number;
     replaySafe?: boolean;
     mutatingAction?: boolean;
     fileTarget?: import("./tool-mutation.js").FileTarget;

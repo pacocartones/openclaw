@@ -1657,9 +1657,12 @@ export async function handleToolExecutionEnd(
   const meta = callSummary.meta;
   const asyncStarted = !isToolError && isAsyncStartedToolResult(sanitizedResult);
   const asyncTaskIds = asyncStarted ? readAsyncStartedTaskIds(sanitizedResult) : {};
+  const durationMs =
+    startData?.startTime != null ? Math.max(0, Date.now() - startData.startTime) : undefined;
   ctx.state.toolMetas.push({
     toolName,
     meta,
+    ...(durationMs !== undefined && durationMs > 0 ? { durationMs } : {}),
     replaySafe,
     ...(callSummary.mutatingAction ? { mutatingAction: true } : {}),
     ...(callSummary.fileTarget ? { fileTarget: callSummary.fileTarget } : {}),
@@ -2098,7 +2101,6 @@ export async function handleToolExecutionEnd(
   // Run after_tool_call plugin hook (fire-and-forget)
   const hookRunnerAfter = ctx.hookRunner ?? (await loadHookRunnerGlobal()).getGlobalHookRunner();
   if (hookRunnerAfter?.hasHooks("after_tool_call")) {
-    const durationMs = startData?.startTime != null ? Date.now() - startData.startTime : undefined;
     const hookEvent: PluginHookAfterToolCallEvent = {
       toolName,
       params: startArgs,

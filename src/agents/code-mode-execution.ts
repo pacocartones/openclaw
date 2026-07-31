@@ -395,7 +395,7 @@ async function settleCodeModeResult(params: {
           runId: activeRunId,
           replayId: params.codeModeReplayId,
           pending,
-          replaySafe: params.readOnly,
+          replaySafe: params.readOnly || params.replaySafe,
           readOnly: params.readOnly,
           sideEffectFree,
           settlementMode: result.settlementMode,

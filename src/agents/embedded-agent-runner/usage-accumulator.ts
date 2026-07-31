@@ -104,7 +104,7 @@ export const mergeAttemptRunStatsIntoAccumulator = (
       failures?: number;
     };
     codeModeEngaged?: boolean;
-    toolMetas?: Array<{ toolName: string; isError?: boolean }>;
+    toolMetas?: Array<{ toolName: string; durationMs?: number; isError?: boolean }>;
     lastToolError?: unknown;
   },
 ) => {
@@ -140,11 +140,20 @@ export const mergeAttemptRunStatsIntoAccumulator = (
     }
     const failedCalls = toolMetas.filter((entry) => entry.isError === true).length;
     const metadataMissingForFailure = fallbackHadFailure && toolMetas.length === 0;
+    const attemptToolTimeMs = toolMetas.reduce((total, entry) => {
+      const durationMs = entry.durationMs;
+      return typeof durationMs === "number" && Number.isFinite(durationMs) && durationMs >= 0
+        ? total + durationMs
+        : total;
+    }, 0);
     target.toolSummary = {
       calls: (previous?.calls ?? 0) + toolMetas.length + Number(metadataMissingForFailure),
       tools,
       sequence,
       failures: (previous?.failures ?? 0) + (failedCalls || Number(fallbackHadFailure)),
+      ...((previous?.totalToolTimeMs ?? 0) + attemptToolTimeMs > 0
+        ? { totalToolTimeMs: (previous?.totalToolTimeMs ?? 0) + attemptToolTimeMs }
+        : {}),
     };
   }
   if (!attempt.bridgeCalls) {

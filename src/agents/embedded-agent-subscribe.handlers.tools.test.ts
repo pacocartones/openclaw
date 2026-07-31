@@ -326,6 +326,37 @@ function expectRecordFields(value: unknown, label: string, expected: Record<stri
   }
 }
 
+describe("tool duration metadata", () => {
+  it("records positive execution time for terminal summaries", async () => {
+    const { ctx } = createTestContext();
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-07-31T00:00:00Z"));
+      await startTool(ctx, {
+        toolName: "read",
+        toolCallId: "tool-duration",
+        args: { path: "facts.txt" },
+      });
+      vi.advanceTimersByTime(25);
+      await endTool(ctx, {
+        toolName: "read",
+        toolCallId: "tool-duration",
+        isError: false,
+        result: { content: [], details: {} },
+      });
+
+      expect(ctx.state.toolMetas).toContainEqual(
+        expect.objectContaining({
+          toolName: "read",
+          durationMs: 25,
+        }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 function requireMockCallArg(mock: ReturnType<typeof vi.fn>, callIndex: number, label: string) {
   return requireRecord(mock.mock.calls[callIndex]?.[0], label);
 }
@@ -1795,15 +1826,17 @@ describe("handleToolExecutionEnd mutating failure recovery", () => {
       },
     });
 
-    expect(ctx.state.toolMetas).toContainEqual({
-      toolName: "exec",
-      meta: undefined,
-      replaySafe: true,
-      mutatingAction: true,
-      sideEffectFree: true,
-      codeModeRepairAllowed: true,
-      isError: true,
-    });
+    expect(ctx.state.toolMetas).toContainEqual(
+      expect.objectContaining({
+        toolName: "exec",
+        meta: undefined,
+        replaySafe: true,
+        mutatingAction: true,
+        sideEffectFree: true,
+        codeModeRepairAllowed: true,
+        isError: true,
+      }),
+    );
     expect(ctx.state.lastToolError).toMatchObject({
       toolName: "exec",
       mutatingAction: false,
@@ -1832,13 +1865,15 @@ describe("handleToolExecutionEnd mutating failure recovery", () => {
       },
     });
 
-    expect(ctx.state.toolMetas).toContainEqual({
-      toolName: "exec",
-      meta: undefined,
-      replaySafe: false,
-      mutatingAction: true,
-      sideEffectFree: true,
-    });
+    expect(ctx.state.toolMetas).toContainEqual(
+      expect.objectContaining({
+        toolName: "exec",
+        meta: undefined,
+        replaySafe: false,
+        mutatingAction: true,
+        sideEffectFree: true,
+      }),
+    );
     expect(ctx.state.replayState).toEqual({
       replayInvalid: true,
       hadPotentialSideEffects: true,
@@ -1863,13 +1898,15 @@ describe("handleToolExecutionEnd mutating failure recovery", () => {
       },
     });
 
-    expect(ctx.state.toolMetas).toContainEqual({
-      toolName: "exec",
-      meta: undefined,
-      replaySafe: true,
-      mutatingAction: true,
-      sideEffectFree: true,
-    });
+    expect(ctx.state.toolMetas).toContainEqual(
+      expect.objectContaining({
+        toolName: "exec",
+        meta: undefined,
+        replaySafe: true,
+        mutatingAction: true,
+        sideEffectFree: true,
+      }),
+    );
     expect(ctx.state.replayState).toEqual({
       replayInvalid: false,
       hadPotentialSideEffects: false,
@@ -1901,16 +1938,18 @@ describe("handleToolExecutionEnd mutating failure recovery", () => {
       },
     });
 
-    expect(ctx.state.toolMetas).toContainEqual({
-      toolName: "exec",
-      meta: undefined,
-      replaySafe: false,
-      mutatingAction: true,
-      sideEffectFree: false,
-      codeModeLastCallSideEffectFree: false,
-      codeModeSuccessfulObservationFileTargets: [{ path: "facts.txt" }],
-      codeModeUnverifiedMutationFileTargets: [{ path: "result.txt", expected: "unknown" }],
-    });
+    expect(ctx.state.toolMetas).toContainEqual(
+      expect.objectContaining({
+        toolName: "exec",
+        meta: undefined,
+        replaySafe: false,
+        mutatingAction: true,
+        sideEffectFree: false,
+        codeModeLastCallSideEffectFree: false,
+        codeModeSuccessfulObservationFileTargets: [{ path: "facts.txt" }],
+        codeModeUnverifiedMutationFileTargets: [{ path: "result.txt", expected: "unknown" }],
+      }),
+    );
     expect(ctx.state.replayState).toEqual({
       replayInvalid: true,
       hadPotentialSideEffects: true,
@@ -1936,12 +1975,14 @@ describe("handleToolExecutionEnd mutating failure recovery", () => {
       },
     });
 
-    expect(ctx.state.toolMetas).toContainEqual({
-      toolName: "exec",
-      meta: undefined,
-      replaySafe: false,
-      mutatingAction: true,
-    });
+    expect(ctx.state.toolMetas).toContainEqual(
+      expect.objectContaining({
+        toolName: "exec",
+        meta: undefined,
+        replaySafe: false,
+        mutatingAction: true,
+      }),
+    );
     expect(ctx.state.replayState).toEqual({
       replayInvalid: true,
       hadPotentialSideEffects: true,

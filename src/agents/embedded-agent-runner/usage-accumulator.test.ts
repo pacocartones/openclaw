@@ -122,9 +122,9 @@ describe("usage-accumulator", () => {
 
       mergeAttemptRunStatsIntoAccumulator(acc, {
         toolMetas: [
-          { toolName: "exec" },
-          { toolName: "read" },
-          { toolName: "exec", isError: true },
+          { toolName: "exec", durationMs: 12 },
+          { toolName: "read", durationMs: 8 },
+          { toolName: "exec", durationMs: 5, isError: true },
         ],
         lastToolError: { toolName: "exec" },
       });
@@ -133,7 +133,7 @@ describe("usage-accumulator", () => {
         toolMetas: [],
       });
       mergeAttemptRunStatsIntoAccumulator(acc, {
-        toolMetas: [{ toolName: "wait" }],
+        toolMetas: [{ toolName: "wait", durationMs: 15 }],
       });
       mergeAttemptRunStatsIntoAccumulator(acc, {
         toolMetas: [],
@@ -145,6 +145,7 @@ describe("usage-accumulator", () => {
         tools: ["exec", "read", "wait", "write"],
         sequence: ["exec", "read", "exec", "wait", "write"],
         failures: 2,
+        totalToolTimeMs: 40,
       });
     });
   });

@@ -261,6 +261,7 @@ export type EmbeddedRunAttemptResult = {
   toolMetas: Array<{
     toolName: string;
     meta?: string;
+    durationMs?: number;
     replaySafe?: boolean;
     mutatingAction?: boolean;
     fileTarget?: FileTarget;

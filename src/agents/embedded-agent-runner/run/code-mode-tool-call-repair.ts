@@ -77,6 +77,7 @@ function repairStringifiedStructuredArguments(
 
 function resolveUniqueGuestToolByArguments(
   rawArguments: Record<string, unknown>,
+  guestToolNames: ReadonlySet<string>,
   guestToolSchemas: ReadonlyMap<string, unknown>,
 ): GuestToolInvocation | undefined {
   // This runs before outer tool validation or nested dispatch. Ambiguous schema
@@ -87,6 +88,9 @@ function resolveUniqueGuestToolByArguments(
   }
   let matched: GuestToolInvocation | undefined;
   for (const [name, parameters] of guestToolSchemas) {
+    if (!guestToolNames.has(name)) {
+      continue;
+    }
     const properties =
       isRecord(parameters) && isRecord(parameters.properties) ? parameters.properties : undefined;
     // Open schemas often accept arbitrary extra keys. Requiring every supplied
@@ -144,7 +148,7 @@ function resolveGuestToolInvocation(
   ) {
     return undefined;
   }
-  return resolveUniqueGuestToolByArguments(rawArguments, guestToolSchemas);
+  return resolveUniqueGuestToolByArguments(rawArguments, guestToolNames, guestToolSchemas);
 }
 
 function translateCodeModeGuestToolCall(

@@ -49,12 +49,15 @@ function createFakeStream(params: { events?: unknown[]; resultMessage: unknown }
 
 async function invoke(
   params: { events?: unknown[]; resultMessage: unknown },
-  options?: { nativeToolNames?: ReadonlySet<string> },
+  options?: {
+    guestToolNames?: ReadonlySet<string>;
+    nativeToolNames?: ReadonlySet<string>;
+  },
 ) {
   const baseFn = vi.fn(() => createFakeStream(params));
   const wrapped = wrapStreamFnTranslateCodeModeGuestToolCalls(
     baseFn as never,
-    new Set(GUEST_TOOL_SCHEMAS.keys()),
+    options?.guestToolNames ?? new Set(GUEST_TOOL_SCHEMAS.keys()),
     GUEST_TOOL_SCHEMAS,
     options?.nativeToolNames,
   );
@@ -301,6 +304,34 @@ describe("Code Mode outer guest tool-call repair", () => {
       role: "assistant",
       content: [{ type: "toolCall", name: "read", arguments: { path: "facts.txt" } }],
     });
+  });
+
+  it("does not infer malformed exec arguments from an excluded guest schema", async () => {
+    const toolCall = {
+      type: "toolCall",
+      name: "exec",
+      arguments: {
+        path: "editable.txt",
+        edits: '[{"oldText":"status=pending","newText":"status=verified"}]',
+      },
+    };
+    const message = {
+      role: "assistant",
+      content: [toolCall],
+    };
+    const expected = structuredClone(message);
+
+    await expect(
+      invoke(
+        { resultMessage: message },
+        {
+          guestToolNames: new Set(["read"]),
+          nativeToolNames: new Set(["edit"]),
+        },
+      ),
+    ).resolves.toEqual(expected);
+    expect(toolCall.name).toBe("exec");
+    expect(toolCall.arguments).toEqual(expected.content[0]?.arguments);
   });
 
   it("repairs stringified structured fields against the guest tool schema", async () => {

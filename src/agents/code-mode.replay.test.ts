@@ -3,16 +3,18 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setPluginToolMeta } from "../plugins/tools.js";
-import { applyCodeModeCatalog } from "./code-mode.js";
+import { applyCodeModeCatalog, createCodeModeTools } from "./code-mode.js";
 import {
   resetCodeModeTestState,
   fakeTool,
   pluginTool,
+  pluginToolWithExecute,
   mcpTool,
   resultDetails,
   createCodeModeHarness,
   runUntilCompleted,
 } from "./code-mode.test-support.js";
+import { createToolSearchCatalogRef } from "./tool-search.js";
 
 describe("Code Mode restart-safe replay", () => {
   beforeEach(() => {
@@ -230,6 +232,73 @@ describe("Code Mode restart-safe replay", () => {
     expect(failed.status).toBe("failed");
     expect(failed.error).toContain("cannot call side-effecting tools");
     expect(targetTool.execute).not.toHaveBeenCalled();
+  });
+
+  it("preserves restart safety when a replay-safe call is parked", async () => {
+    const catalogRef = createToolSearchCatalogRef();
+    const config = {
+      tools: {
+        codeMode: {
+          enabled: true,
+          timeoutMs: 100,
+        },
+      },
+    } as never;
+    const ctx = {
+      config,
+      runtimeConfig: config,
+      sessionId: "session-code-mode",
+      sessionKey: "agent:main:main",
+      runId: "run-code-mode",
+      catalogRef,
+      forceRestartSafeTools: true,
+    };
+    const codeModeTools = createCodeModeTools(ctx);
+    const slowRead = pluginToolWithExecute(
+      "fake_slow_read",
+      "Slow read",
+      async () => await new Promise<never>(() => {}),
+    );
+    setPluginToolMeta(slowRead, {
+      pluginId: "fake-code-mode",
+      optional: true,
+      replaySafe: true,
+    });
+    applyCodeModeCatalog({
+      tools: [...codeModeTools, slowRead],
+      config,
+      sessionId: ctx.sessionId,
+      sessionKey: ctx.sessionKey,
+      runId: ctx.runId,
+      catalogRef,
+    });
+
+    const parked = resultDetails(
+      await expectDefined(codeModeTools[0], "Code Mode exec test invariant").execute(
+        "code-call-restart-safe-park",
+        {
+          code: `
+            const matches = await tools.search("fake_slow_read");
+            return await tools.call(matches[0].id, {});
+          `,
+        },
+      ),
+    );
+
+    expect(parked).toMatchObject({
+      status: "waiting",
+      replaySafe: true,
+    });
+    const stillWaiting = resultDetails(
+      await expectDefined(codeModeTools[1], "Code Mode wait test invariant").execute(
+        "code-wait-restart-safe-park",
+        { runId: parked.runId },
+      ),
+    );
+    expect(stillWaiting).toMatchObject({
+      status: "waiting",
+      replaySafe: true,
+    });
   });
 
   it("keeps host-forced read-only mode across audited core reads", async () => {
