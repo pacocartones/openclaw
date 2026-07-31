@@ -103,10 +103,16 @@ function matchesFileTargetPath(value: string, target: FileTarget, cwd?: string):
 function extractExplicitPathLiterals(line: string): string[] {
   const candidates = new Set<string>();
   for (const match of line.matchAll(/(['"])([^'"]+)\1/gu)) {
-    candidates.add(match[2]);
+    const candidate = match[2];
+    if (candidate) {
+      candidates.add(candidate);
+    }
   }
   for (const match of line.matchAll(/(?:^|\s|\(|=|\[)((?:\/|[a-z]:[\\/]|\\\\)[^\s'")\],;:]+)/giu)) {
-    candidates.add(match[1]);
+    const candidate = match[1];
+    if (candidate) {
+      candidates.add(candidate);
+    }
   }
   if (
     /\b(?:access|chmod|chown|copy|create|delete|link|load|lstat|mkdir|mkdtemp|open|read|readdir|readlink|realpath|remove|rename|rm|rmdir|save|scandir|stat|symlink|truncate|unlink|write)\b/iu.test(
@@ -116,10 +122,16 @@ function extractExplicitPathLiterals(line: string): string[] {
     for (const match of line.matchAll(
       /\b(?:access|chmod|chown|copy|create|delete|link|load|lstat|mkdir|mkdtemp|open|read|readdir|readlink|realpath|remove|rename|rm|rmdir|save|scandir|stat|symlink|truncate|unlink|write)\s+([^\s:'"(),]+)/giu,
     )) {
-      candidates.add(match[1]);
+      const candidate = match[1];
+      if (candidate) {
+        candidates.add(candidate);
+      }
     }
     for (const match of line.matchAll(/\bto\s+([^\s:'"(),]+)/giu)) {
-      candidates.add(match[1]);
+      const candidate = match[1];
+      if (candidate) {
+        candidates.add(candidate);
+      }
     }
   }
   return [...candidates];
