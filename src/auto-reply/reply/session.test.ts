@@ -1812,7 +1812,7 @@ describe("initSessionState RawBody", () => {
     const storePath = await createStorePath("openclaw-bound-admission-id-");
     const sourceSessionKey = "agent:main:slack:source";
     const sourceSessionId = "source-admission-session";
-    const boundSessionKey = "plugin-binding:codex:bound-target";
+    const boundSessionKey = "agent:main:plugin-binding:codex:bound-target";
     const boundSessionId = "bound-target-session";
     await writeSessionStoreFast(storePath, {
       [sourceSessionKey]: { sessionId: sourceSessionId, updatedAt: Date.now() },
@@ -3221,7 +3221,7 @@ describe("initSessionState preserves behavior overrides across /new and /reset",
 
   it("preserves spawned session ownership metadata across /new and /reset", async () => {
     const storePath = await createStorePath("openclaw-reset-spawned-metadata-");
-    const sessionKey = "subagent:owned-child";
+    const sessionKey = "agent:main:subagent:owned-child";
     const existingSessionId = "existing-session-owned-child";
     const overrides = {
       spawnedBy: "agent:main:main",
@@ -4251,17 +4251,17 @@ describe("drainFormattedSystemEvents", () => {
 });
 
 describe("persistSessionUsageUpdate", () => {
+  const sessionKey = "agent:main:main";
   async function seedSessionStore(
     storePath: string,
-    sessionKey: string,
+    targetSessionKey: string,
     entry: Record<string, unknown>,
   ) {
-    await writeSessionStoreFast(storePath, { [sessionKey]: entry });
+    await writeSessionStoreFast(storePath, { [targetSessionKey]: entry });
   }
 
   it("accounts exhausted-run usage without committing its model and persists CLI binding", async () => {
     const storePath = await createStorePath("openclaw-usage-exhausted-");
-    const sessionKey = "main";
     await seedSessionStore(storePath, sessionKey, {
       sessionId: "s1",
       updatedAt: 1,
@@ -4310,7 +4310,6 @@ describe("persistSessionUsageUpdate", () => {
 
   it("accounts goal usage when fresh token snapshots are persisted", async () => {
     const storePath = await createStorePath("openclaw-usage-goal-");
-    const sessionKey = "main";
     await seedSessionStore(storePath, sessionKey, {
       sessionId: "s1",
       updatedAt: 1,
@@ -4701,7 +4700,6 @@ describe("persistSessionUsageUpdate", () => {
     expected: Partial<SessionEntry>;
   }>)("$name", async ({ seed, update, expected, name }) => {
     const storePath = await createStorePath("openclaw-usage-");
-    const sessionKey = "main";
     await seedSessionStore(storePath, sessionKey, {
       sessionId: "s1",
       updatedAt: Date.now(),
@@ -4723,7 +4721,6 @@ describe("persistSessionUsageUpdate", () => {
   });
   it("snapshots estimatedCostUsd instead of accumulating (fixes #69347)", async () => {
     const storePath = await createStorePath("openclaw-usage-cost-");
-    const sessionKey = "main";
     await seedSessionStore(storePath, sessionKey, {
       sessionId: "s1",
       updatedAt: Date.now(),
@@ -4891,7 +4888,6 @@ describe("persistSessionUsageUpdate", () => {
 
   it("persists zero estimatedCostUsd for free priced models", async () => {
     const storePath = await createStorePath("openclaw-usage-free-cost-");
-    const sessionKey = "main";
     await seedSessionStore(storePath, sessionKey, {
       sessionId: "s1",
       updatedAt: Date.now(),
