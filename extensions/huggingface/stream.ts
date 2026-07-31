@@ -17,7 +17,7 @@ function usesQwenChatTemplateThinking(model: ProviderWrapStreamFnContext["model"
   return (model.compat as { thinkingFormat?: unknown }).thinkingFormat === "qwen-chat-template";
 }
 
-export function createHuggingfaceQwenThinkingWrapper(ctx: ProviderWrapStreamFnContext): StreamFn {
+function createHuggingfaceQwenThinkingWrapper(ctx: ProviderWrapStreamFnContext): StreamFn {
   return createPayloadPatchStreamWrapper(
     ctx.streamFn,
     ({ payload, options }) => {

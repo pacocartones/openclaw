@@ -2,7 +2,7 @@
 import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
 import type { Context, Model } from "openclaw/plugin-sdk/llm";
 import { describe, expect, it } from "vitest";
-import { createHuggingfaceQwenThinkingWrapper, wrapHuggingfaceProviderStream } from "./stream.js";
+import { wrapHuggingfaceProviderStream } from "./stream.js";
 
 function capturePayload(params: {
   thinkingLevel?: "off" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -25,13 +25,16 @@ function capturePayload(params: {
     compat: { thinkingFormat: "qwen-chat-template" },
     ...params.model,
   } as Model<"openai-completions">;
-  const wrapped = createHuggingfaceQwenThinkingWrapper({
+  const wrapped = wrapHuggingfaceProviderStream({
     provider: "huggingface",
     modelId: model.id,
     model,
     streamFn: baseStreamFn,
     thinkingLevel: params.thinkingLevel ?? "high",
   } as never);
+  if (!wrapped) {
+    return captured;
+  }
   void wrapped(
     model,
     { messages: [] } as Context,

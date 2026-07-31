@@ -251,10 +251,6 @@ export function normalizeHuggingfaceResolvedModel(
   };
 }
 
-export function resetHuggingfaceToolSupportSnapshotForTest(): void {
-  huggingfaceToolSupportByModel = new Map();
-}
-
 function isHuggingfaceQwenHybridThinkingModel(modelId: string): boolean {
   const leaf = normalizeLowercaseStringOrEmpty(modelId).split("/").pop() ?? "";
   if (!leaf.startsWith("qwen3")) {

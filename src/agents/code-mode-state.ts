@@ -253,7 +253,7 @@ export function snapshotState(params: {
   }
 }
 
-export function pendingBridgeRequestReplaySafe(
+function pendingBridgeRequestReplaySafe(
   request: PendingBridgeRequest,
   runtime: ToolSearchRuntime,
 ): boolean {
@@ -282,15 +282,6 @@ export function pendingBridgeRequestsReplaySafe(
   return pending.every((request) => pendingBridgeRequestReplaySafe(request, runtime));
 }
 
-export function pendingBridgeStatesSideEffectFree(pending: readonly PendingBridgeState[]): boolean {
-  return pending.every(
-    (request) =>
-      !request.potentialSideEffectStarted &&
-      (request.settled !== undefined ||
-        (request.executionBoundaryClassified && request.knownSideEffectFree)),
-  );
-}
-
 export function mergePendingBridgeSideEffectFree(
   current: boolean,
   pending: readonly PendingBridgeState[],
@@ -300,7 +291,7 @@ export function mergePendingBridgeSideEffectFree(
   return current && !pending.some((request) => request.potentialSideEffectStarted);
 }
 
-export function pendingBridgeRequestSideEffectFree(
+function pendingBridgeRequestSideEffectFree(
   request: PendingBridgeRequest,
   runtime: ToolSearchRuntime,
 ): boolean {

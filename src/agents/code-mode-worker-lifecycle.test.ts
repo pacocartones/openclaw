@@ -6,7 +6,6 @@ import {
   disposeAllCodeModeRuns,
   disposeCodeModeRun,
   mergePendingBridgeSideEffectFree,
-  pendingBridgeStatesSideEffectFree,
   reserveActiveRunSlot,
   resumingRunIds,
   storeSnapshotState,
@@ -87,10 +86,8 @@ describe("Code Mode worker lifecycle", () => {
       potentialSideEffectStarted: false,
     };
 
-    expect(pendingBridgeStatesSideEffectFree([pending])).toBe(false);
     expect(mergePendingBridgeSideEffectFree(true, [pending])).toBe(true);
     pending.executionBoundaryClassified = true;
-    expect(pendingBridgeStatesSideEffectFree([pending])).toBe(true);
     expect(mergePendingBridgeSideEffectFree(true, [pending])).toBe(true);
     pending.knownSideEffectFree = false;
     pending.potentialSideEffectStarted = true;

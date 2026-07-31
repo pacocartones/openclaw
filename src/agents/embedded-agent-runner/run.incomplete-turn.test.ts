@@ -29,7 +29,6 @@ import {
   DEFAULT_REASONING_ONLY_RETRY_LIMIT,
   NORMAL_CODE_MODE_CONTINUATION_INSTRUCTION,
   RESTART_SAFE_CODE_MODE_CONTINUATION_INSTRUCTION,
-  requiresCodeModeMutationVerification,
   resolveCodeModeMutationVerificationState,
   resolveEmptyResponseRetryInstruction,
   isIncompleteTerminalAssistantTurn,
@@ -55,7 +54,7 @@ const SETTLED_TOOL_TERMINAL_CONTINUATION_INSTRUCTION =
 
 let runEmbeddedAgent: typeof import("./run.js").runEmbeddedAgent;
 
-type CodeModeMutationAttempt = Parameters<typeof requiresCodeModeMutationVerification>[0];
+type CodeModeMutationAttempt = Parameters<typeof resolveCodeModeMutationVerificationState>[0];
 
 // Cold GitHub-hosted fork runners can spend more than five minutes loading and
 // warming this broad harness before the first test reports progress.
@@ -69,6 +68,10 @@ function resolveIncompleteTurnPayloadText(
   // Most helper tests exercise internal abort behavior; external aborts opt in
   // explicitly through params.
   return resolveIncompleteTurnPayloadTextCore({ externalAbort: false, ...params });
+}
+
+function requiresCodeModeMutationVerification(attempt: CodeModeMutationAttempt): boolean {
+  return resolveCodeModeMutationVerificationState(attempt).pendingTargets.length > 0;
 }
 
 describe("runEmbeddedAgent incomplete-turn safety", () => {

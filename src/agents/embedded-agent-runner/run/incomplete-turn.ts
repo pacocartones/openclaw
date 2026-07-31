@@ -182,7 +182,7 @@ export function resolveAttemptReplayMetadata(attempt: {
   return attempt.replayMetadata ?? REPLAY_UNSAFE_FALLBACK_METADATA;
 }
 
-export type CodeModeContinuationToolPolicy = "normal" | "read-only";
+type CodeModeContinuationToolPolicy = "normal" | "read-only";
 
 /** Selects the bounded tool policy for an unfinished settled Code Mode turn. */
 export function resolveCodeModeContinuationToolPolicy(attempt: {
@@ -339,28 +339,6 @@ export function resolveCodeModeMutationVerificationState(
     }
   }
   return { pendingTargets };
-}
-
-export function requiresCodeModeMutationVerification(attempt: {
-  codeModeEngaged?: boolean;
-  toolMetas?: ReadonlyArray<{
-    toolName?: string;
-    isError?: boolean;
-    mutatingAction?: boolean;
-    fileTarget?: FileTarget;
-    fileTargets?: FileTarget[];
-    fileMutationExecutionStarted?: true;
-    fileTargetVerified?: true;
-    fileTargetAbsent?: true;
-    sideEffectFree?: boolean;
-    codeModeLastCallSideEffectFree?: boolean;
-    codeModeSuccessfulObservationFileTargets?: FileTarget[];
-    codeModeSuccessfulAbsenceObservationFileTargets?: FileTarget[];
-    codeModeUnverifiedMutationFileTargets?: FileTarget[];
-  }>;
-}): boolean {
-  const state = resolveCodeModeMutationVerificationState(attempt);
-  return state.pendingTargets.length > 0;
 }
 
 type TerminalAttemptState = Pick<

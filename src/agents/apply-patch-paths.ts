@@ -47,7 +47,7 @@ export type ApplyPatchPathExtractionOptions = {
   };
 };
 
-export type ApplyPatchTargetPath = {
+type ApplyPatchTargetPath = {
   path: string;
   expected: "present" | "absent";
 };

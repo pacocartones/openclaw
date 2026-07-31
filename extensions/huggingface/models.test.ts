@@ -9,11 +9,7 @@ import {
   HUGGINGFACE_MODEL_CATALOG,
   isHuggingfacePolicyLocked,
 } from "./api.js";
-import {
-  normalizeHuggingfaceResolvedModel,
-  resetHuggingfaceToolSupportSnapshotForTest,
-  resolveHuggingfaceRoutedModel,
-} from "./models.js";
+import { normalizeHuggingfaceResolvedModel, resolveHuggingfaceRoutedModel } from "./models.js";
 
 const ORIGINAL_VITEST = process.env.VITEST;
 const ORIGINAL_NODE_ENV = process.env.NODE_ENV;
@@ -40,10 +36,26 @@ function responseFromReader(reader: ReadableStreamDefaultReader<Uint8Array>): Re
   } as Response;
 }
 
-afterEach(() => {
+async function clearHuggingfaceToolSupportSnapshot() {
+  process.env.VITEST = "false";
+  process.env.NODE_ENV = "development";
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(
+      async () =>
+        new Response(JSON.stringify({ data: [{ id: "test/reset", providers: [] }] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    ),
+  );
+  await discoverHuggingfaceModels("hf_test_token");
+}
+
+afterEach(async () => {
+  await clearHuggingfaceToolSupportSnapshot();
   restoreEnv("VITEST", ORIGINAL_VITEST);
   restoreEnv("NODE_ENV", ORIGINAL_NODE_ENV);
-  resetHuggingfaceToolSupportSnapshotForTest();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
