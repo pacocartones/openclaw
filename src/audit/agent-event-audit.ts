@@ -161,14 +161,20 @@ function projectAgentEvent(
   const runInstance = buildRunInstance(runId, event.lifecycleGeneration);
   const isLifecycleTerminal =
     event.stream === "lifecycle" && (phase === "end" || phase === "error");
+  const isTrackedStaleRetry =
+    event.stream === "lifecycle" &&
+    phase === "start" &&
+    state.openRunProvenance.has(runInstance) &&
+    state.activeRunInstanceByRunId.get(runId) === runInstance &&
+    hasAuthoritativeRunContext(runInstance, runId);
   if (
     event.lifecycleGeneration &&
     !isAgentEventLifecycleGenerationCurrent(event.lifecycleGeneration) &&
-    !(isLifecycleTerminal && state.openRunProvenance.has(runInstance))
+    !(isLifecycleTerminal && state.openRunProvenance.has(runInstance)) &&
+    !isTrackedStaleRetry
   ) {
-    // Stale starts cannot replace admission. A tracked pre-rotation run may
-    // still close its exact instance; rememberRunTerminal keeps the newer
-    // active admission authoritative.
+    // Only the exact still-owned pre-rotation instance may retry or close.
+    // Stale starts cannot replace a newer admission.
     return undefined;
   }
   if (event.stream === "lifecycle" && phase === "start") {

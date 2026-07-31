@@ -504,6 +504,37 @@ describe("agent audit lifecycle generations", () => {
     });
   });
 
+  it("lets an authoritative pre-rotation retry cancel its provisional terminal", async () => {
+    const inputs: AuditEventInput[] = [];
+    const recorder = createAgentEventAuditRecorder({
+      writer: captureAuditWriter(inputs),
+      terminalSettleMs: 60_000,
+    });
+    const runId = "run-authoritative-old-retry";
+    const oldGeneration = getAgentEventLifecycleGeneration();
+    registerAgentRunContext(runId, {
+      lifecycleGeneration: oldGeneration,
+      sessionKey: "agent:old:main",
+      agentId: "old",
+    });
+
+    recorder.record(agentEvent({ runId, lifecycleGeneration: oldGeneration }));
+    recorder.record(
+      agentEvent({
+        runId,
+        lifecycleGeneration: oldGeneration,
+        seq: 2,
+        data: { phase: "error" },
+      }),
+    );
+    rotateAgentEventLifecycleGeneration();
+    recorder.record(agentEvent({ runId, lifecycleGeneration: oldGeneration, seq: 3 }));
+    await recorder.stop();
+
+    expect(inputs.filter((input) => input.action === "agent.run.started")).toHaveLength(1);
+    expect(inputs.filter((input) => input.action === "agent.run.finished")).toEqual([]);
+  });
+
   it("rejects an evicted old-generation start after newer admission", async () => {
     const inputs: AuditEventInput[] = [];
     const recorder = createAgentEventAuditRecorder({
