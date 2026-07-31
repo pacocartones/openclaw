@@ -1,14 +1,16 @@
 // Code Mode model matrix tests cover repeatable small-model acceptance evidence.
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   classifyCodeModeMatrixCell,
   runCodeModeModelMatrix,
   validateQaEvidenceSummaryJson,
   type CodeModeMatrixCellResult,
 } from "../../../scripts/code-mode-model-matrix.ts";
+import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 describe("Code Mode model matrix classification", () => {
   const successEnvelope = {
@@ -503,7 +505,7 @@ describe("Code Mode model matrix classification", () => {
 
 describe("Code Mode model matrix artifacts", () => {
   it("keeps repetitions contiguous within each model, mode, and task cohort", async () => {
-    const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-code-mode-order-test-"));
+    const repoRoot = tempDirs.make("openclaw-code-mode-order-test-");
     try {
       const result = await runCodeModeModelMatrix(
         {
@@ -556,8 +558,8 @@ describe("Code Mode model matrix artifacts", () => {
   });
 
   it("builds and records identity from an external product checkout", async () => {
-    const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-code-mode-harness-test-"));
-    const targetRoot = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-code-mode-target-test-"));
+    const repoRoot = tempDirs.make("openclaw-code-mode-harness-test-");
+    const targetRoot = tempDirs.make("openclaw-code-mode-target-test-");
     try {
       await fs.mkdir(path.join(repoRoot, "packages"));
       await fs.mkdir(path.join(targetRoot, "packages"));
@@ -642,7 +644,7 @@ describe("Code Mode model matrix artifacts", () => {
   });
 
   it("rejects output inside Git metadata", async () => {
-    const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-code-mode-git-test-"));
+    const repoRoot = tempDirs.make("openclaw-code-mode-git-test-");
     try {
       await fs.mkdir(path.join(repoRoot, ".git"));
       await expect(
@@ -678,7 +680,7 @@ describe("Code Mode model matrix artifacts", () => {
   });
 
   it("rejects case aliases of missing runtime artifacts", async () => {
-    const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-code-mode-case-test-"));
+    const repoRoot = tempDirs.make("openclaw-code-mode-case-test-");
     try {
       const canonicalRoot = await fs.realpath(repoRoot);
       const rootName = path.basename(canonicalRoot);
@@ -731,7 +733,7 @@ describe("Code Mode model matrix artifacts", () => {
   });
 
   it("rejects package artifact namespaces before reservation creates them", async () => {
-    const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-code-mode-package-test-"));
+    const repoRoot = tempDirs.make("openclaw-code-mode-package-test-");
     try {
       await fs.mkdir(path.join(repoRoot, "packages"));
       await expect(
@@ -771,7 +773,7 @@ describe("Code Mode model matrix artifacts", () => {
   it.each(["dist", path.join("packages", "agent-core", "dist")])(
     "rejects output inside build-created runtime artifacts: %s",
     async (artifactDir) => {
-      const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-code-mode-build-test-"));
+      const repoRoot = tempDirs.make("openclaw-code-mode-build-test-");
       let hashed = false;
       try {
         await expect(
@@ -818,7 +820,7 @@ describe("Code Mode model matrix artifacts", () => {
   );
 
   it("continues after cell crashes and reports first-repetition versus any success", async () => {
-    const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-code-mode-matrix-test-"));
+    const repoRoot = tempDirs.make("openclaw-code-mode-matrix-test-");
     try {
       let calls = 0;
       const result = await runCodeModeModelMatrix(

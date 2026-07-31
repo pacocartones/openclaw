@@ -1,7 +1,6 @@
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   buildCodeModeMatrixAgentEnv,
   buildCodeModeMatrixConfig,
@@ -13,6 +12,9 @@ import {
   summarizeCodeModeMatrixResults,
   type CodeModeMatrixCellResult,
 } from "../../../scripts/code-mode-model-matrix.ts";
+import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 describe("Code Mode model matrix options", () => {
   it("separates input-output, last-call, cache, and retry metrics", () => {
@@ -164,7 +166,7 @@ describe("Code Mode model matrix options", () => {
   });
 
   it("reserves a fresh output path without symlink traversal", async () => {
-    const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-code-mode-output-test-"));
+    const repoRoot = tempDirs.make("openclaw-code-mode-output-test-");
     try {
       const existing = path.join(repoRoot, "existing");
       await fs.mkdir(existing);
@@ -172,7 +174,7 @@ describe("Code Mode model matrix options", () => {
         "must not already exist",
       );
 
-      const outside = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-code-mode-outside-test-"));
+      const outside = tempDirs.make("openclaw-code-mode-outside-test-");
       const linked = path.join(repoRoot, "linked");
       await fs.symlink(outside, linked, process.platform === "win32" ? "junction" : "dir");
       await expect(
@@ -185,7 +187,7 @@ describe("Code Mode model matrix options", () => {
   });
 
   it("allows only one concurrent run to reserve an output path", async () => {
-    const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-code-mode-reserve-test-"));
+    const repoRoot = tempDirs.make("openclaw-code-mode-reserve-test-");
     try {
       const outputDir = path.join(repoRoot, "nested", "results");
       const attempts = await Promise.allSettled([
