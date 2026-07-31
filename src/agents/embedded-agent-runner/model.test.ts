@@ -363,6 +363,7 @@ function resolveModelAsyncForTest(
   cfg?: OpenClawConfig,
   options?: {
     allowBundledStaticCatalogFallback?: boolean;
+    mergeBundledStaticCatalogMetadata?: boolean;
     preferBundledStaticCatalogTransport?: boolean;
     retryTransientProviderRuntimeMiss?: boolean;
     runtimeHooks?: ReturnType<typeof createRuntimeHooks>;
@@ -1404,7 +1405,7 @@ describe("resolveModel", () => {
     expect(discoverModels).not.toHaveBeenCalled();
   });
 
-  it("merges bundled static capability metadata into resolved models when opted in", async () => {
+  it("merges bundled static capability metadata without enabling static fallback", async () => {
     mockDiscoveredModel(discoverModels, {
       provider: "openai",
       modelId: "gpt-5.5-pro",
@@ -1442,8 +1443,8 @@ describe("resolveModel", () => {
     });
 
     const result = await resolveModelAsync("openai", "gpt-5.5-pro", "/tmp/agent", undefined, {
-      allowBundledStaticCatalogFallback: true,
       authStorage: { mocked: true } as never,
+      mergeBundledStaticCatalogMetadata: true,
       modelRegistry: discoverModels({ mocked: true } as never, "/tmp/agent"),
       runtimeHooks: createRuntimeHooks(),
       skipAgentDiscovery: true,
@@ -1464,6 +1465,39 @@ describe("resolveModel", () => {
       workspaceDir: undefined,
       includeRuntimeDiscovery: true,
     });
+  });
+
+  it("does not resolve a missing model from a metadata-only catalog lookup", async () => {
+    resolveBundledStaticCatalogModelMock.mockReturnValueOnce({
+      provider: "mistral",
+      id: "mistral-medium-3-5",
+      name: "Mistral Medium 3.5",
+      api: "openai-completions",
+      baseUrl: "https://api.mistral.ai/v1",
+      reasoning: true,
+      input: ["text"],
+      cost: { input: 1.5, output: 7.5, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 262_144,
+      maxTokens: 8_192,
+    });
+
+    const result = await resolveModelAsync(
+      "mistral",
+      "mistral-medium-3-5",
+      "/tmp/agent",
+      undefined,
+      {
+        authStorage: { mocked: true } as never,
+        mergeBundledStaticCatalogMetadata: true,
+        modelRegistry: { find: vi.fn(() => null) } as never,
+        runtimeHooks: createRuntimeHooks(),
+        skipAgentDiscovery: true,
+      },
+    );
+
+    expect(result.model).toBeUndefined();
+    expect(result.error).toContain("Unknown model");
+    expect(resolveBundledStaticCatalogModelMock).not.toHaveBeenCalled();
   });
 
   it("merges configured media input with discovered model metadata", () => {

@@ -60,6 +60,7 @@ type CommonModelResolutionOptions = {
 
 type AsyncModelResolutionOptions = CommonModelResolutionOptions & {
   allowBundledStaticCatalogFallback?: boolean;
+  mergeBundledStaticCatalogMetadata?: boolean;
   preferBundledStaticCatalogTransport?: boolean;
   retryTransientProviderRuntimeMiss?: boolean;
   agentRuntimeId?: string;
@@ -312,7 +313,10 @@ export async function resolveModelAsync(
   });
   let staticCatalogLookup: Promise<ProviderRuntimeModel | undefined> | undefined;
   const resolveStaticCatalogModel = async () => {
-    if (!options?.allowBundledStaticCatalogFallback) {
+    if (
+      !options?.allowBundledStaticCatalogFallback &&
+      !options?.mergeBundledStaticCatalogMetadata
+    ) {
       return undefined;
     }
     staticCatalogLookup ??= (async () => {
@@ -431,7 +435,10 @@ export async function resolveModelAsync(
       runtimeHooks,
     });
   }
-  if (model && options?.allowBundledStaticCatalogFallback) {
+  if (
+    model &&
+    (options?.allowBundledStaticCatalogFallback || options?.mergeBundledStaticCatalogMetadata)
+  ) {
     // Dynamic provider discovery owns live transport/runtime facts, while the
     // matching bundled catalog owns stable capability metadata such as Code
     // Mode preference and unsupported request parameters.
