@@ -334,9 +334,12 @@ function stripInheritedAgentLocations(base: OpenClawConfig): OpenClawConfig {
 function buildExecRunOverlay(params: {
   base: OpenClawConfig;
   cwd: string;
-  opts: Pick<AgentExecCliOptions, "codeMode" | "localModelLean">;
+  opts: Pick<AgentExecCliOptions, "codeMode" | "fallback" | "localModelLean" | "model">;
 }): OpenClawConfig {
   const codeMode = normalizeCodeMode(params.opts.codeMode);
+  const explicitModelRefs = [params.opts.model, ...(params.opts.fallback ?? [])]
+    .map((model) => model?.trim())
+    .filter((model): model is string => Boolean(model?.includes("/")));
   // A per-agent `workspace` outranks `agents.defaults`, so pinning only the
   // defaults would let an inherited entry silently run the turn against a
   // different repository. Override every configured entry as well.
@@ -346,6 +349,11 @@ function buildExecRunOverlay(params: {
       defaults: {
         workspace: params.cwd,
         skipBootstrap: true,
+        ...(explicitModelRefs.length > 0
+          ? {
+              models: Object.fromEntries(explicitModelRefs.map((model) => [model, {}])),
+            }
+          : {}),
         ...(params.opts.localModelLean ? { experimental: { localModelLean: true } } : {}),
       },
       ...(entries.length > 0
@@ -423,7 +431,7 @@ export async function resolveExecBaseConfig(
 export function buildExecRunConfig(params: {
   base: OpenClawConfig;
   cwd: string;
-  opts?: Pick<AgentExecCliOptions, "codeMode" | "localModelLean">;
+  opts?: Pick<AgentExecCliOptions, "codeMode" | "fallback" | "localModelLean" | "model">;
 }): OpenClawConfig {
   const opts = params.opts ?? {};
   const base = stripInheritedAgentLocations(params.base);
