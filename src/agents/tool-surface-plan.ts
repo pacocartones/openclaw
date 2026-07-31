@@ -129,7 +129,6 @@ export function applyAgentToolSurfaceCatalog({
   return applyCatalog({
     ...catalogParams,
     config: toolSearchRuntimeConfig,
-    directCoreToolNames,
     directToolNames,
   });
 }
