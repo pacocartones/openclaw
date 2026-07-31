@@ -53,15 +53,31 @@ function resolveGuestToolName(
   return guestToolNames.has(candidate) ? candidate : undefined;
 }
 
+function stringifyJson(value: unknown): string | undefined {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return undefined;
+  }
+}
+
 function serializeGuestToolArguments(value: unknown): string | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return undefined;
   }
-  try {
-    const serialized = JSON.stringify(value);
-    return serialized.length <= MAX_TRANSLATED_ARGUMENT_CHARS ? serialized : undefined;
-  } catch {
-    return undefined;
+  const serialized = stringifyJson(value);
+  return serialized !== undefined && serialized.length <= MAX_TRANSLATED_ARGUMENT_CHARS
+    ? serialized
+    : undefined;
+}
+
+function updatePartialArgs(toolCall: { partialArgs?: unknown }, value: unknown): void {
+  if (typeof toolCall.partialArgs !== "string") {
+    return;
+  }
+  const serialized = stringifyJson(value);
+  if (serialized !== undefined) {
+    toolCall.partialArgs = serialized;
   }
 }
 
@@ -169,6 +185,7 @@ function translateCodeModeGuestToolCall(
     name?: unknown;
     arguments?: unknown;
     input?: unknown;
+    partialArgs?: unknown;
   };
   if (!isRunnerToolCallBlockType(toolCall.type) || typeof toolCall.name !== "string") {
     return;
@@ -193,9 +210,7 @@ function translateCodeModeGuestToolCall(
     if ("input" in toolCall) {
       toolCall.input = invocation.arguments;
     }
-    if (typeof (toolCall as { partialArgs?: unknown }).partialArgs === "string") {
-      (toolCall as { partialArgs: string }).partialArgs = JSON.stringify(invocation.arguments);
-    }
+    updatePartialArgs(toolCall, invocation.arguments);
     return;
   }
   const serializedArguments = serializeGuestToolArguments(invocation.arguments);
@@ -210,9 +225,7 @@ function translateCodeModeGuestToolCall(
   if ("input" in toolCall) {
     toolCall.input = translatedArguments;
   }
-  if (typeof (toolCall as { partialArgs?: unknown }).partialArgs === "string") {
-    (toolCall as { partialArgs: string }).partialArgs = JSON.stringify(translatedArguments);
-  }
+  updatePartialArgs(toolCall, translatedArguments);
 }
 
 function translateCodeModeGuestToolCalls(

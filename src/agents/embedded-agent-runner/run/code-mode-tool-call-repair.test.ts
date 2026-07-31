@@ -178,6 +178,32 @@ describe("Code Mode outer guest tool-call repair", () => {
     });
   });
 
+  it.each([
+    { name: "read", nativeToolNames: new Set(["read"]) },
+    { name: "tools.read", nativeToolNames: undefined },
+  ])("preserves $name when valid arguments stringify to undefined", async (options) => {
+    const argumentsWithUndefinedJson = { path: "facts.txt" };
+    Object.defineProperty(argumentsWithUndefinedJson, "toJSON", {
+      value: () => undefined,
+    });
+    const toolCall = {
+      type: "toolCall",
+      name: options.name,
+      arguments: argumentsWithUndefinedJson,
+      partialArgs: '{"path":"facts.txt"}',
+    };
+    const message = { role: "assistant", content: [toolCall] };
+
+    await expect(
+      invoke({ resultMessage: message }, { nativeToolNames: options.nativeToolNames }),
+    ).resolves.toBe(message);
+    expect(toolCall).toMatchObject({
+      name: options.name,
+      arguments: argumentsWithUndefinedJson,
+      partialArgs: '{"path":"facts.txt"}',
+    });
+  });
+
   it.each(["read", "tools.read", "tools/read"])(
     "translates exact guest method %s into exec",
     async (name) => {
