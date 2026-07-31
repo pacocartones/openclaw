@@ -87,4 +87,8 @@ describe("huggingface plugin", () => {
   it("registers route-aware resolved-model normalization", () => {
     expect(registerProvider().normalizeResolvedModel).toBeTypeOf("function");
   });
+
+  it("registers routed model resolution", () => {
+    expect(registerProvider().resolveDynamicModel).toBeTypeOf("function");
+  });
 });

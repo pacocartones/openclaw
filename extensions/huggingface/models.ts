@@ -1,7 +1,10 @@
 // Huggingface plugin module implements models behavior.
 import { withTrustedEnvProxyGuardedFetchMode } from "openclaw/plugin-sdk/fetch-runtime";
 import { resolveTimerTimeoutMs } from "openclaw/plugin-sdk/number-runtime";
-import type { ProviderRuntimeModel } from "openclaw/plugin-sdk/plugin-entry";
+import type {
+  ProviderResolveDynamicModelContext,
+  ProviderRuntimeModel,
+} from "openclaw/plugin-sdk/plugin-entry";
 import { readProviderJsonResponse } from "openclaw/plugin-sdk/provider-http";
 import type { ModelDefinitionConfig } from "openclaw/plugin-sdk/provider-model-types";
 import {
@@ -51,6 +54,7 @@ type OpenAIListModelsResponse = {
 type HuggingfaceToolSupportSnapshot = {
   allLiveRoutesExplicitlyUnsupported: boolean;
   byProvider: ReadonlyMap<string, boolean>;
+  liveProviders: ReadonlySet<string>;
 };
 
 let huggingfaceToolSupportByModel = new Map<string, HuggingfaceToolSupportSnapshot>();
@@ -128,9 +132,14 @@ function buildHuggingfaceToolSupportSnapshot(
       (provider) => provider.status === undefined || provider.status === "live",
     );
     const providerSupport = new Map<string, boolean>();
+    const liveProviderIds = new Set<string>();
     for (const provider of liveProviders) {
       const providerId = normalizeLowercaseStringOrEmpty(provider.provider);
-      if (!providerId || typeof provider.supports_tools !== "boolean") {
+      if (!providerId) {
+        continue;
+      }
+      liveProviderIds.add(providerId);
+      if (typeof provider.supports_tools !== "boolean") {
         continue;
       }
       providerSupport.set(providerId, provider.supports_tools);
@@ -138,10 +147,11 @@ function buildHuggingfaceToolSupportSnapshot(
     const allLiveRoutesExplicitlyUnsupported =
       liveProviders.length > 0 &&
       liveProviders.every((provider) => provider.supports_tools === false);
-    if (providerSupport.size > 0 || allLiveRoutesExplicitlyUnsupported) {
+    if (liveProviderIds.size > 0) {
       snapshot.set(modelId, {
         allLiveRoutesExplicitlyUnsupported,
         byProvider: providerSupport,
+        liveProviders: liveProviderIds,
       });
     }
   }
@@ -150,16 +160,64 @@ function buildHuggingfaceToolSupportSnapshot(
 
 function splitHuggingfaceRouteModelId(modelId: string): {
   baseModelId: string;
+  normalizedBaseModelId: string;
   suffix?: string;
 } {
-  const normalized = normalizeLowercaseStringOrEmpty(modelId);
-  const separator = normalized.lastIndexOf(":");
+  const trimmed = modelId.trim();
+  const separator = trimmed.lastIndexOf(":");
   if (separator < 0) {
-    return { baseModelId: normalized };
+    return {
+      baseModelId: trimmed,
+      normalizedBaseModelId: normalizeLowercaseStringOrEmpty(trimmed),
+    };
+  }
+  const baseModelId = trimmed.slice(0, separator);
+  return {
+    baseModelId,
+    normalizedBaseModelId: normalizeLowercaseStringOrEmpty(baseModelId),
+    suffix: normalizeLowercaseStringOrEmpty(trimmed.slice(separator + 1)),
+  };
+}
+
+function isRecognizedHuggingfaceRoute(
+  route: ReturnType<typeof splitHuggingfaceRouteModelId>,
+): boolean {
+  if (!route.suffix) {
+    return false;
+  }
+  if (HUGGINGFACE_POLICY_SUFFIXES.some((suffix) => suffix === route.suffix)) {
+    return true;
+  }
+  return (
+    huggingfaceToolSupportByModel
+      .get(route.normalizedBaseModelId)
+      ?.liveProviders.has(route.suffix) === true
+  );
+}
+
+export function resolveHuggingfaceRoutedModel(
+  ctx: ProviderResolveDynamicModelContext,
+): ProviderRuntimeModel | undefined {
+  const route = splitHuggingfaceRouteModelId(ctx.modelId);
+  if (!route.baseModelId || !isRecognizedHuggingfaceRoute(route)) {
+    return undefined;
+  }
+  const normalizedProvider = normalizeLowercaseStringOrEmpty(ctx.provider);
+  const baseModel =
+    ctx.modelRegistry.find(ctx.provider, route.baseModelId) ??
+    ctx.modelRegistry
+      .getAll()
+      .find(
+        (model) =>
+          normalizeLowercaseStringOrEmpty(model.provider) === normalizedProvider &&
+          normalizeLowercaseStringOrEmpty(model.id) === route.normalizedBaseModelId,
+      );
+  if (!baseModel) {
+    return undefined;
   }
   return {
-    baseModelId: normalized.slice(0, separator),
-    suffix: normalized.slice(separator + 1),
+    ...baseModel,
+    id: ctx.modelId.trim(),
   };
 }
 
@@ -171,7 +229,7 @@ export function normalizeHuggingfaceResolvedModel(
     return undefined;
   }
   const route = splitHuggingfaceRouteModelId(modelId);
-  const support = huggingfaceToolSupportByModel.get(route.baseModelId);
+  const support = huggingfaceToolSupportByModel.get(route.normalizedBaseModelId);
   const isPolicyRoute =
     route.suffix !== undefined &&
     HUGGINGFACE_POLICY_SUFFIXES.some((policySuffix) => policySuffix === route.suffix);

@@ -1,6 +1,6 @@
 // Huggingface plugin entrypoint registers its OpenClaw integration.
 import { defineSingleProviderPluginEntry } from "openclaw/plugin-sdk/provider-entry";
-import { normalizeHuggingfaceResolvedModel } from "./models.js";
+import { normalizeHuggingfaceResolvedModel, resolveHuggingfaceRoutedModel } from "./models.js";
 import { applyHuggingfaceConfig, HUGGINGFACE_DEFAULT_MODEL_REF } from "./onboard.js";
 import manifest from "./openclaw.plugin.json" with { type: "json" };
 import { buildHuggingfaceProvider } from "./provider-catalog.js";
@@ -51,6 +51,7 @@ export default defineSingleProviderPluginEntry({
         };
       },
     },
+    resolveDynamicModel: resolveHuggingfaceRoutedModel,
     normalizeResolvedModel: ({ modelId, model }) =>
       normalizeHuggingfaceResolvedModel(modelId, model),
     wrapStreamFn: wrapHuggingfaceProviderStream,

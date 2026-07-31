@@ -5,12 +5,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildHuggingfaceModelDefinition,
   discoverHuggingfaceModels,
+  HUGGINGFACE_BASE_URL,
   HUGGINGFACE_MODEL_CATALOG,
   isHuggingfacePolicyLocked,
 } from "./api.js";
 import {
   normalizeHuggingfaceResolvedModel,
   resetHuggingfaceToolSupportSnapshotForTest,
+  resolveHuggingfaceRoutedModel,
 } from "./models.js";
 
 const ORIGINAL_VITEST = process.env.VITEST;
@@ -342,6 +344,51 @@ describe("huggingface models", () => {
         thinkingFormat: "qwen-chat-template",
       },
     });
+    const catalogModel = expectDefined(
+      models.find((model) => model.id === "Qwen/Qwen3.5-9B"),
+      "discovered Qwen route model",
+    );
+    const modelRegistry = {
+      find: vi.fn((_provider: string, modelId: string) =>
+        modelId === "Qwen/Qwen3.5-9B"
+          ? {
+              ...catalogModel,
+              provider: "huggingface",
+              api: "openai-completions",
+              baseUrl: HUGGINGFACE_BASE_URL,
+            }
+          : undefined,
+      ),
+      getAll: vi.fn(() => []),
+    } as never;
+    expect(
+      resolveHuggingfaceRoutedModel({
+        provider: "huggingface",
+        modelId: "Qwen/Qwen3.5-9B:primary",
+        modelRegistry,
+      } as never),
+    ).toMatchObject({
+      id: "Qwen/Qwen3.5-9B:primary",
+      provider: "huggingface",
+      compat: { thinkingFormat: "qwen-chat-template" },
+    });
+    expect(
+      resolveHuggingfaceRoutedModel({
+        provider: "huggingface",
+        modelId: "Qwen/Qwen3.5-9B:preferred",
+        modelRegistry,
+      } as never),
+    ).toMatchObject({
+      id: "Qwen/Qwen3.5-9B:preferred",
+      provider: "huggingface",
+    });
+    expect(
+      resolveHuggingfaceRoutedModel({
+        provider: "huggingface",
+        modelId: "Qwen/Qwen3.5-9B:unknown",
+        modelRegistry,
+      } as never),
+    ).toBeUndefined();
     expect(cancel).not.toHaveBeenCalled();
     expect(releaseLock).toHaveBeenCalledTimes(1);
   });
