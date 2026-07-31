@@ -450,6 +450,62 @@ describe("huggingface models", () => {
     });
   });
 
+  it("clears stale route capabilities after successful empty discovery", async () => {
+    process.env.VITEST = "false";
+    process.env.NODE_ENV = "development";
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              data: [
+                {
+                  id: "test-org/chat-model",
+                  providers: [
+                    {
+                      provider: "primary",
+                      status: "live",
+                      supports_tools: false,
+                    },
+                  ],
+                },
+              ],
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        )
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ data: [] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        ),
+    );
+
+    await discoverHuggingfaceModels("hf_test_token");
+    await discoverHuggingfaceModels("hf_test_token");
+
+    const baseModel = {
+      id: "test-org/chat-model",
+      provider: "huggingface",
+    } as never;
+    expect(
+      normalizeHuggingfaceResolvedModel("test-org/chat-model:primary", baseModel),
+    ).toBeUndefined();
+    expect(
+      resolveHuggingfaceRoutedModel({
+        provider: "huggingface",
+        modelId: "test-org/chat-model:primary",
+        modelRegistry: {
+          find: vi.fn(() => baseModel),
+          getAll: vi.fn(() => []),
+        },
+      } as never),
+    ).toBeUndefined();
+  });
+
   describe("isHuggingfacePolicyLocked", () => {
     it("returns true for router policy refs", () => {
       expect(isHuggingfacePolicyLocked("huggingface/deepseek-ai/DeepSeek-R1:cheapest")).toBe(true);

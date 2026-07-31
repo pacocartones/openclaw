@@ -348,10 +348,13 @@ export async function discoverHuggingfaceModels(
         "huggingface.model-discovery",
       );
       const data = body?.data;
-      if (!Array.isArray(data) || data.length === 0) {
+      if (!Array.isArray(data)) {
         return HUGGINGFACE_MODEL_CATALOG.map(buildHuggingfaceModelDefinition);
       }
       huggingfaceToolSupportByModel = buildHuggingfaceToolSupportSnapshot(data);
+      if (data.length === 0) {
+        return HUGGINGFACE_MODEL_CATALOG.map(buildHuggingfaceModelDefinition);
+      }
 
       const catalogById = new Map(
         HUGGINGFACE_MODEL_CATALOG.map((model) => [model.id, model] as const),
