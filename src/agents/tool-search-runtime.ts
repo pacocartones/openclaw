@@ -623,7 +623,6 @@ export class ToolSearchRuntime {
       this.options.repairInput === true && entry.source === "openclaw"
         ? repairCodeModeToolInput(entry.parameters, input ?? {})
         : (input ?? {});
-    await assertCatalogOutputSchemaIsValid(entry);
     const parentId = sanitizeToolCallIdPart(options?.parentToolCallId ?? "direct");
     const toolCallId = `tool_search_code:${parentId}:${entry.name}:${++this.callSequence}`;
     const executeTool =
@@ -681,6 +680,7 @@ export class ToolSearchRuntime {
       });
     let acceptedResult: AgentToolResult<unknown>;
     try {
+      await assertCatalogOutputSchemaIsValid(entry);
       const result = needsExecutionBoundary
         ? await runWithToolExecutionValidation(
             toolCallId,

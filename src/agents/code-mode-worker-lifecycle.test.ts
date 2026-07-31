@@ -5,6 +5,7 @@ import {
   activeRuns,
   disposeAllCodeModeRuns,
   disposeCodeModeRun,
+  pendingBridgeStatesSideEffectFree,
   reserveActiveRunSlot,
   resumingRunIds,
   storeSnapshotState,
@@ -39,6 +40,7 @@ function parkExpiringRun(
     args: method === "agentWait" ? ["collector-1"] : ["openclaw:core:slow", {}],
     promise: new Promise(() => {}),
     knownSideEffectFree: false,
+    executionBoundaryClassified: true,
     potentialSideEffectStarted: method === "agentWait",
     cancel,
   };
@@ -73,6 +75,22 @@ afterEach(() => {
 });
 
 describe("Code Mode worker lifecycle", () => {
+  it("keeps unresolved calls unsafe until their final execution input is classified", () => {
+    const pending: PendingBridgeState = {
+      id: "bridge:callValue:unclassified",
+      method: "callValue",
+      args: ["openclaw:core:read", { path: "facts.txt" }],
+      promise: new Promise(() => {}),
+      knownSideEffectFree: true,
+      executionBoundaryClassified: false,
+      potentialSideEffectStarted: false,
+    };
+
+    expect(pendingBridgeStatesSideEffectFree([pending])).toBe(false);
+    pending.executionBoundaryClassified = true;
+    expect(pendingBridgeStatesSideEffectFree([pending])).toBe(true);
+  });
+
   it("cancels every suspended run, releases capacity, and clears its expiry timer", () => {
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     const firstRunId = `${CAPACITY_RUN_PREFIX}shutdown_first`;

@@ -22,6 +22,7 @@ export type PendingBridgeState = PendingBridgeRequest & {
   settled?: SettledBridgeRequest;
   settledSequence?: number;
   knownSideEffectFree: boolean;
+  executionBoundaryClassified: boolean;
   potentialSideEffectStarted: boolean;
   cancel?: () => void;
 };
@@ -285,7 +286,8 @@ export function pendingBridgeStatesSideEffectFree(pending: readonly PendingBridg
   return pending.every(
     (request) =>
       !request.potentialSideEffectStarted &&
-      (request.knownSideEffectFree || request.settled !== undefined),
+      (request.settled !== undefined ||
+        (request.executionBoundaryClassified && request.knownSideEffectFree)),
   );
 }
 
@@ -352,6 +354,9 @@ export function createPendingBridgeStates(params: {
     const state: PendingBridgeState = {
       ...request,
       knownSideEffectFree,
+      // Hooks may replace call input asynchronously. Do not trust the original
+      // classification until the final execution boundary has been reached.
+      executionBoundaryClassified: request.method !== "call" && request.method !== "callValue",
       // call/callValue record actual execution only after target validation.
       // While still pending, unclassified calls remain conservatively effectful.
       potentialSideEffectStarted:
@@ -366,6 +371,7 @@ export function createPendingBridgeStates(params: {
         signal,
         onUpdate: params.onUpdate,
         onExecutionStart: (finalInput) => {
+          state.executionBoundaryClassified = true;
           const id = Array.isArray(request.args) ? request.args[0] : undefined;
           const finalSideEffectFree =
             typeof id === "string" && params.runtime.isSideEffectFreeExactCall(id, finalInput);

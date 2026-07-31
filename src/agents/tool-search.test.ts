@@ -944,6 +944,7 @@ describe("Tool Search", () => {
       "has an invalid outputSchema",
     );
     expect(execute).not.toHaveBeenCalled();
+    expect(runtime.telemetry()).toMatchObject({ failures: 1 });
   });
 
   it("recompiles validation when the same catalog id changes its output schema", async () => {
