@@ -90,6 +90,46 @@ describe("resolveCronExecutionRetryHint", () => {
     }
   });
 
+  it("does not classify incidental 429 numbers or provider names as rate limits", () => {
+    for (const message of [
+      "context limit 1429 exceeded",
+      "process exited with 429 lines of output",
+      "assertion failed: expected 429 got 0",
+      "error 429 got 0",
+      "process exited with code 429",
+      "API error: 4291",
+      "ENOENT: no such file '/etc/cloudflare.toml'",
+      "Cloudflare API token is invalid",
+    ]) {
+      expect(resolveCronExecutionRetryHint({ error: message, retryOn: ["rate_limit"] })).toEqual({
+        retryable: false,
+      });
+    }
+  });
+
+  it("classifies genuine HTTP and provider API rate limits", () => {
+    for (const message of [
+      "HTTP 429 Too Many Requests",
+      "received status 429 from upstream",
+      "response code: 429",
+      "statusCode: 429",
+      "status_code=429",
+      "responseCode: 429",
+      "API error: 429",
+      "Provider API error (429): Quota exceeded [code=quota_exceeded]",
+      "429 rate limit exceeded",
+      "429: quota exceeded",
+      "429: quota exhausted",
+      "resource has been exhausted",
+      "429",
+    ]) {
+      expect(resolveCronExecutionRetryHint({ error: message, retryOn: ["rate_limit"] })).toEqual({
+        retryable: true,
+        category: "rate_limit",
+      });
+    }
+  });
+
   it("classifies session lifecycle claim conflicts as transient regardless of retryOn (#106875)", () => {
     for (const message of [
       'CronSessionLifecycleClaimError: Session "agent:main:cron:job-1" changed while starting work. Retry.',
