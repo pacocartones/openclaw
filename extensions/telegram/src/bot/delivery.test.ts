@@ -969,7 +969,9 @@ describe("deliverReplies", () => {
       const sendPhoto = vi
         .fn()
         .mockRejectedValueOnce(
-          new Error(`GrammyError: Call to 'sendPhoto' failed! (400: Bad Request: ${providerReason})`),
+          new Error(
+            `GrammyError: Call to 'sendPhoto' failed! (400: Bad Request: ${providerReason})`,
+          ),
         );
       const sendDocument = vi.fn().mockResolvedValue({
         message_id: 9,
@@ -1015,9 +1017,7 @@ describe("deliverReplies", () => {
           inline_keyboard: [[{ text: "Retry", callback_data: "retry" }]],
         },
       });
-      expect(records).toEqual([
-        expect.objectContaining({ messageId: 9, text: "hi **boss**" }),
-      ]);
+      expect(records).toEqual([expect.objectContaining({ messageId: 9, text: "hi **boss**" })]);
       expect(runtime.error).not.toHaveBeenCalled();
     },
   );

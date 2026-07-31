@@ -72,6 +72,7 @@ import {
 
 const VOICE_FORBIDDEN_MARKER = "VOICE_MESSAGES_FORBIDDEN";
 const CAPTION_TOO_LONG_RE = /caption is too long/i;
+const TELEGRAM_PHOTO_LIMIT_ERROR_RE = /\b(?:PHOTO_INVALID_DIMENSIONS|PHOTO_TOO_BIG)\b/i;
 const GrammyErrorCtor: typeof GrammyError | undefined =
   typeof GrammyError === "function" ? GrammyError : undefined;
 
@@ -308,6 +309,13 @@ function isCaptionTooLong(err: unknown): boolean {
   return CAPTION_TOO_LONG_RE.test(formatErrorMessage(err));
 }
 
+function isTelegramPhotoLimitError(err: unknown): boolean {
+  if (GrammyErrorCtor && err instanceof GrammyErrorCtor) {
+    return TELEGRAM_PHOTO_LIMIT_ERROR_RE.test(err.description);
+  }
+  return TELEGRAM_PHOTO_LIMIT_ERROR_RE.test(formatErrorMessage(err));
+}
+
 function resolveVoiceFallbackText(reply: ReplyPayload): string | undefined {
   if (reply.text?.trim()) {
     return reply.text;
@@ -349,7 +357,7 @@ async function sendTelegramCaptionedMediaWithFallback<T>(params: {
       send: params.send,
     });
   if (!params.plainCaption) {
-    return await sendMedia(params.requestParams);
+    return await sendMedia(params.requestParams, params.shouldLog);
   }
   try {
     return await sendMedia(
@@ -495,14 +503,34 @@ async function deliverMediaReply(params: {
           params.bot.api.sendAnimation(params.chatId, file, { ...effectiveParams }),
       });
     } else if (kind === "image") {
-      await deliverAcceptedMedia({
-        operation: "sendPhoto",
-        requestParams: mediaParams,
-        plainCaption,
-        text: plainCaption,
-        send: (effectiveParams) =>
-          params.bot.api.sendPhoto(params.chatId, file, { ...effectiveParams }),
-      });
+      try {
+        await deliverAcceptedMedia({
+          operation: "sendPhoto",
+          requestParams: mediaParams,
+          plainCaption,
+          text: plainCaption,
+          shouldLog: (error) => !isTelegramPhotoLimitError(error),
+          send: (effectiveParams) =>
+            params.bot.api.sendPhoto(params.chatId, file, { ...effectiveParams }),
+        });
+      } catch (error) {
+        if (!isTelegramPhotoLimitError(error)) {
+          throw error;
+        }
+        // Let Telegram validate photo limits without decoding image buffers;
+        // retry the same accepted caption, topic, quote, and markup as a file.
+        logVerbose(
+          `telegram sendPhoto exceeded photo limits; retrying as document: ${formatErrorMessage(error)}`,
+        );
+        await deliverAcceptedMedia({
+          operation: "sendDocument",
+          requestParams: mediaParams,
+          plainCaption,
+          text: plainCaption,
+          send: (effectiveParams) =>
+            params.bot.api.sendDocument(params.chatId, file, { ...effectiveParams }),
+        });
+      }
     } else if (kind === "video") {
       await deliverAcceptedMedia({
         operation: "sendVideo",
