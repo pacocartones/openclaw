@@ -152,7 +152,7 @@ function splitHuggingfaceRouteModelId(modelId: string): {
   baseModelId: string;
   suffix?: string;
 } {
-  const normalized = normalizeLowercaseStringOrEmpty(modelId).replace(/^huggingface\//u, "");
+  const normalized = normalizeLowercaseStringOrEmpty(modelId);
   const separator = normalized.lastIndexOf(":");
   if (separator < 0) {
     return { baseModelId: normalized };

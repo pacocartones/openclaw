@@ -224,6 +224,16 @@ describe("huggingface models", () => {
             ],
           },
           {
+            id: "huggingface/example",
+            providers: [
+              {
+                provider: "no-tools-provider",
+                status: "live",
+                supports_tools: false,
+              },
+            ],
+          },
+          {
             id: "Qwen/Qwen3.5-9B",
             providers: [
               {
@@ -308,6 +318,11 @@ describe("huggingface models", () => {
       });
     }
     expect(normalizeHuggingfaceResolvedModel("test-org/no-tools-model", baseModel)).toMatchObject({
+      compat: { supportsTools: false },
+    });
+    expect(
+      normalizeHuggingfaceResolvedModel("huggingface/example:no-tools-provider", baseModel),
+    ).toMatchObject({
       compat: { supportsTools: false },
     });
     expect(
