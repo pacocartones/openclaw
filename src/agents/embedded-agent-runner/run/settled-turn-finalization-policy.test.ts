@@ -170,16 +170,22 @@ describe("settled Code Mode continuation policy", () => {
     expect(instruction).toBeNull();
   });
 
-  it("keeps terminal tool restrictions latched across continuation attempts", () => {
+  it("keeps restart-safe restrictions latched across continuation attempts", () => {
     const state = createEmbeddedRunTerminalRetryState();
     state.forceRestartSafeToolsForNextAttempt = true;
-    state.forceReadOnlyToolsForNextAttempt = true;
 
     expect(consumeForceRestartSafeToolsForNextAttempt(state, false)).toBe(true);
     expect(consumeForceRestartSafeToolsForNextAttempt(state, false)).toBe(true);
     expect(consumeForceRestartSafeToolsForNextAttempt(state, true)).toBe(true);
+  });
+
+  it("releases terminal read-only tools after the verification attempt", () => {
+    const state = createEmbeddedRunTerminalRetryState();
+    state.forceReadOnlyToolsForNextAttempt = true;
+
     expect(consumeForceReadOnlyToolsForNextAttempt(state, false)).toBe(true);
-    expect(consumeForceReadOnlyToolsForNextAttempt(state, false)).toBe(true);
+    expect(state.forceReadOnlyToolsForNextAttempt).toBe(false);
+    expect(consumeForceReadOnlyToolsForNextAttempt(state, false)).toBe(false);
     expect(consumeForceReadOnlyToolsForNextAttempt(state, true)).toBe(true);
   });
 });
