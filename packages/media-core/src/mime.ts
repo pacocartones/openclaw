@@ -17,6 +17,8 @@ const EXT_BY_MIME: Record<string, string> = {
   "image/svg+xml": ".svg",
   "image/webp": ".webp",
   "image/gif": ".gif",
+  "audio/aiff": ".aiff",
+  "audio/x-aiff": ".aiff",
   "audio/ogg": ".ogg",
   "audio/mpeg": ".mp3",
   "audio/mp3": ".mp3",
@@ -80,6 +82,8 @@ const MIME_BY_EXT: Record<string, string> = {
   ".wav": "audio/wav",
   ".webm": "video/webm",
   // Additional extension aliases
+  ".aif": "audio/aiff",
+  ".aifc": "audio/aiff",
   ".jpeg": "image/jpeg",
   ".js": "text/javascript",
   ".log": "text/plain",
