@@ -1439,6 +1439,64 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
     expectNoWarnMessageWith("settled post-tool turn lacked a final answer");
   });
 
+  it("surfaces an error when Code Mode mutation verification retries are exhausted", async () => {
+    const unverifiedAssistant = {
+      role: "assistant",
+      stopReason: "stop",
+      provider: "huggingface",
+      model: "Qwen/Qwen3.5-9B",
+      content: [{ type: "text", text: "The write completed." }],
+    } as unknown as NonNullable<EmbeddedRunAttemptResult["lastAssistant"]>;
+    mockedClassifyFailoverReason.mockReturnValue(null);
+    for (let attemptIndex = 0; attemptIndex < 3; attemptIndex += 1) {
+      mockedRunEmbeddedAttempt.mockResolvedValueOnce(
+        makeAttemptResult({
+          assistantTexts: ["The write completed."],
+          codeModeEngaged: true,
+          toolMetas: [
+            {
+              toolName: attemptIndex === 0 ? "exec" : "read",
+              replaySafe: attemptIndex > 0,
+              sideEffectFree: attemptIndex > 0,
+              codeModeUnverifiedMutationFileTargets: [{ path: "result.txt" }],
+            },
+          ],
+          replayMetadata: {
+            hadPotentialSideEffects: attemptIndex === 0,
+            replaySafe: attemptIndex > 0,
+          },
+          currentAttemptReplayMetadata: {
+            hadPotentialSideEffects: attemptIndex === 0,
+            replaySafe: attemptIndex > 0,
+          },
+          itemLifecycle: { startedCount: 1, completedCount: 1, activeCount: 0 },
+          lastAssistant: unverifiedAssistant,
+          currentAttemptAssistant: unverifiedAssistant,
+          currentAttemptCompletedAssistant: unverifiedAssistant,
+        }),
+      );
+    }
+    mockedBuildEmbeddedRunPayloads.mockReturnValue([{ text: "The write completed." }]);
+
+    const result = await runEmbeddedAgent({
+      ...overflowBaseRunParams,
+      provider: "huggingface",
+      model: "Qwen/Qwen3.5-9B",
+      runId: "run-code-mode-verification-exhausted",
+    });
+
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(3);
+    expect(result.payloads).toEqual([
+      {
+        text: "⚠️ Agent stopped before completing Code Mode verification. Please inspect the changes and try again.",
+        isError: true,
+      },
+    ]);
+    expect(runAttemptCall(1).forceReadOnlyTools).toBe(true);
+    expect(runAttemptCall(2).forceReadOnlyTools).toBe(true);
+    expectWarnMessageWith("Code Mode verification retries exhausted");
+  });
+
   it("requires read-back after a successful Code Mode write-only sequence", async () => {
     const prematureAssistant = {
       role: "assistant",

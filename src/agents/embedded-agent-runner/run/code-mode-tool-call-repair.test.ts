@@ -30,7 +30,7 @@ const GUEST_TOOL_SCHEMAS = new Map<string, unknown>([
 ]);
 
 const TRANSLATED_READ_CODE =
-  'const __openclawResult = await tools["read"](JSON.parse("{\\"path\\":\\"facts.txt\\"}")); console.log("Recovered only the read guest tool call. Re-read the original request and complete every remaining step before answering; do not repeat this completed call. If the user requested a named key\'s value, use the value associated with that exact key, never the key name itself."); return __openclawResult;';
+  'const __openclawResult = await tools["read"](JSON.parse("{\\"path\\":\\"facts.txt\\"}")); console.log("Recovered only the read guest tool call. Re-read the original request and complete every remaining step before answering; do not repeat this completed call. In Code Mode, `await tools.read(...)` returns the text wrapper directly; use `.content` or `.field(key)`, never `[0]` or `result[0].content`. If the user requested a named key\'s value, use the value associated with that exact key, never the key name itself."); return __openclawResult;';
 
 function createFakeStream(params: { events?: unknown[]; resultMessage: unknown }) {
   return {
@@ -237,7 +237,7 @@ describe("Code Mode outer guest tool-call repair", () => {
       type: "toolCall",
       name: "exec",
       arguments: {
-        code: 'const __openclawResult = await tools["write"](JSON.parse("{\\"path\\":\\"result.txt\\",\\"content\\":\\"ok\\"}")); console.log("Recovered only the write guest tool call. Re-read the original request and complete every remaining step before answering; do not repeat this completed call. A mutation is not verification: when read-back or verification was requested, do not answer until it succeeds and matches the requested state."); return __openclawResult;',
+        code: 'const __openclawResult = await tools["write"](JSON.parse("{\\"path\\":\\"result.txt\\",\\"content\\":\\"ok\\"}")); console.log("Recovered only the write guest tool call. Re-read the original request and complete every remaining step before answering; do not repeat this completed call. A mutation is not verification: when read-back or verification was requested, do not answer until it succeeds and matches the requested state. In Code Mode, `await tools.read(...)` returns the text wrapper directly; use `.content` or `.field(key)`, never `[0]` or `result[0].content`."); return __openclawResult;',
       },
     };
     expect(streamedCall).toEqual(translated);
@@ -360,6 +360,27 @@ describe("Code Mode outer guest tool-call repair", () => {
     const result = await invoke({ resultMessage: message });
     expect(requireExecCode(result)).toContain(
       'JSON.parse("{\\"path\\":\\"editable.txt\\",\\"edits\\":[{\\"oldText\\":\\"status=pending\\",\\"newText\\":\\"status=verified\\"}]}")',
+    );
+  });
+
+  it("lifts a misplaced edit path out of stringified edit items", async () => {
+    const message = {
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          name: "edit",
+          arguments: {
+            edits:
+              '[{"newText":"status=verified","oldText":"status=pending","path":"editable.txt"}]',
+          },
+        },
+      ],
+    };
+
+    const result = await invoke({ resultMessage: message });
+    expect(requireExecCode(result)).toContain(
+      'JSON.parse("{\\"edits\\":[{\\"newText\\":\\"status=verified\\",\\"oldText\\":\\"status=pending\\"}],\\"path\\":\\"editable.txt\\"}")',
     );
   });
 
@@ -551,7 +572,7 @@ describe("Code Mode outer guest tool-call repair", () => {
 
     const result = await invoke({ resultMessage: message });
     expect(requireExecCode(result)).toBe(
-      'const __openclawResult = await tools["read"](JSON.parse("{\\"__proto__\\":{\\"safe\\":true},\\"nested\\":{\\"__proto__\\":\\"value\\"}}")); console.log("Recovered only the read guest tool call. Re-read the original request and complete every remaining step before answering; do not repeat this completed call. If the user requested a named key\'s value, use the value associated with that exact key, never the key name itself."); return __openclawResult;',
+      'const __openclawResult = await tools["read"](JSON.parse("{\\"__proto__\\":{\\"safe\\":true},\\"nested\\":{\\"__proto__\\":\\"value\\"}}")); console.log("Recovered only the read guest tool call. Re-read the original request and complete every remaining step before answering; do not repeat this completed call. In Code Mode, `await tools.read(...)` returns the text wrapper directly; use `.content` or `.field(key)`, never `[0]` or `result[0].content`. If the user requested a named key\'s value, use the value associated with that exact key, never the key name itself."); return __openclawResult;',
     );
   });
 

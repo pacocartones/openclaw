@@ -19,6 +19,109 @@ function readComposedSchemaBranches(schema: Record<string, unknown>): unknown[] 
   return Array.isArray(schema.anyOf) ? schema.anyOf : undefined;
 }
 
+function parseJsonContainer(value: unknown): unknown {
+  if (typeof value !== "string") {
+    return value;
+  }
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed) || isRecord(parsed) ? parsed : value;
+  } catch {
+    return value;
+  }
+}
+
+function valuesMatch(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) {
+    return true;
+  }
+  try {
+    return JSON.stringify(left) === JSON.stringify(right);
+  } catch {
+    return false;
+  }
+}
+
+function copyRecord(value: Record<string, unknown>): Record<string, unknown> {
+  return Object.assign(Object.create(null) as Record<string, unknown>, value);
+}
+
+function liftMisplacedRequiredArrayItemFields(
+  schema: Record<string, unknown>,
+  value: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  if (!isRecord(schema.properties) || !Array.isArray(schema.required)) {
+    return undefined;
+  }
+  const missingRequired = schema.required.filter(
+    (entry): entry is string => typeof entry === "string" && !Object.hasOwn(value, entry),
+  );
+  if (missingRequired.length === 0) {
+    return undefined;
+  }
+  let repaired: Record<string, unknown> | undefined;
+  for (const requiredKey of missingRequired) {
+    const requiredSchema = schema.properties[requiredKey];
+    let match:
+      | {
+          arrayKey: string;
+          items: Record<string, unknown>[];
+          value: unknown;
+        }
+      | undefined;
+    for (const [arrayKey, rawArray] of Object.entries(repaired ?? value)) {
+      const arraySchema = schema.properties[arrayKey];
+      if (
+        !isRecord(arraySchema) ||
+        arraySchema.type !== "array" ||
+        !isRecord(arraySchema.items) ||
+        (isRecord(arraySchema.items.properties) &&
+          Object.hasOwn(arraySchema.items.properties, requiredKey))
+      ) {
+        continue;
+      }
+      const parsedArray = parseJsonContainer(rawArray);
+      if (
+        !Array.isArray(parsedArray) ||
+        parsedArray.length === 0 ||
+        !parsedArray.every((entry) => isRecord(entry) && Object.hasOwn(entry, requiredKey))
+      ) {
+        continue;
+      }
+      const candidate = parsedArray[0]?.[requiredKey];
+      if (
+        !schemaAcceptsValue(requiredSchema, candidate) ||
+        !parsedArray.every((entry) => valuesMatch(entry[requiredKey], candidate))
+      ) {
+        continue;
+      }
+      if (match) {
+        return undefined;
+      }
+      match = {
+        arrayKey,
+        items: parsedArray.map((entry) => {
+          const item = Object.create(null) as Record<string, unknown>;
+          for (const [key, itemValue] of Object.entries(entry)) {
+            if (key !== requiredKey) {
+              item[key] = itemValue;
+            }
+          }
+          return item;
+        }),
+        value: candidate,
+      };
+    }
+    if (!match) {
+      continue;
+    }
+    repaired ??= copyRecord(value);
+    repaired[requiredKey] = match.value;
+    repaired[match.arrayKey] = match.items;
+  }
+  return repaired && schemaAcceptsValue(schema, repaired) ? repaired : undefined;
+}
+
 export function repairCodeModeToolInput(schema: unknown, value: unknown, depth = 0): unknown {
   if (!isRecord(schema) || depth > 6) {
     return value;
@@ -83,6 +186,10 @@ export function repairCodeModeToolInput(schema: unknown, value: unknown, depth =
   }
   if (!isRecord(value) || !isRecord(schema.properties)) {
     return value;
+  }
+  const lifted = liftMisplacedRequiredArrayItemFields(schema, value);
+  if (lifted) {
+    return lifted;
   }
   const required = new Set(
     Array.isArray(schema.required)

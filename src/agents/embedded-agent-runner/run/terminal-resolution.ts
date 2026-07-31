@@ -315,28 +315,41 @@ export async function resolveEmbeddedRunTerminal(input: {
     );
     return { action: "retry" };
   }
-  if (
-    !nextReasoningOnlyRetryInstruction &&
-    input.toolCapableContinuation &&
-    retryState.codeModeVerificationContinuationAttempts < MAX_CODE_MODE_VERIFICATION_CONTINUATIONS
-  ) {
-    retryState.codeModeVerificationContinuationAttempts += 1;
-    const forceReadOnlyTools =
-      retryState.forceReadOnlyToolsForNextAttempt ||
-      input.toolCapableContinuation.forceReadOnlyTools;
-    retryState.forceReadOnlyToolsForNextAttempt = forceReadOnlyTools;
-    input.activateInternalPrompt(
-      forceReadOnlyTools
-        ? RESTART_SAFE_CODE_MODE_CONTINUATION_INSTRUCTION
-        : input.toolCapableContinuation.instruction,
-      true,
-    );
+  if (!nextReasoningOnlyRetryInstruction && input.toolCapableContinuation) {
+    if (
+      retryState.codeModeVerificationContinuationAttempts < MAX_CODE_MODE_VERIFICATION_CONTINUATIONS
+    ) {
+      retryState.codeModeVerificationContinuationAttempts += 1;
+      const forceReadOnlyTools =
+        retryState.forceReadOnlyToolsForNextAttempt ||
+        input.toolCapableContinuation.forceReadOnlyTools;
+      retryState.forceReadOnlyToolsForNextAttempt = forceReadOnlyTools;
+      input.activateInternalPrompt(
+        forceReadOnlyTools
+          ? RESTART_SAFE_CODE_MODE_CONTINUATION_INSTRUCTION
+          : input.toolCapableContinuation.instruction,
+        true,
+      );
+      log.warn(
+        `settled Code Mode work stopped before final verification: runId=${runParams.runId} sessionId=${runParams.sessionId} ` +
+          `provider=${input.activeErrorContext.provider}/${input.activeErrorContext.model} — retrying ${retryState.codeModeVerificationContinuationAttempts}/${MAX_CODE_MODE_VERIFICATION_CONTINUATIONS} ` +
+          `with ${forceReadOnlyTools ? "read-only" : "normal"} tools`,
+      );
+      return { action: "retry" };
+    }
+    const incompletePayloadText =
+      "⚠️ Agent stopped before completing Code Mode verification. Please inspect the changes and try again.";
     log.warn(
-      `settled Code Mode work stopped before final verification: runId=${runParams.runId} sessionId=${runParams.sessionId} ` +
-        `provider=${input.activeErrorContext.provider}/${input.activeErrorContext.model} — retrying ${retryState.codeModeVerificationContinuationAttempts}/${MAX_CODE_MODE_VERIFICATION_CONTINUATIONS} ` +
-        `with ${forceReadOnlyTools ? "read-only" : "normal"} tools`,
+      `Code Mode verification retries exhausted: runId=${runParams.runId} sessionId=${runParams.sessionId} ` +
+        `provider=${input.activeErrorContext.provider}/${input.activeErrorContext.model} ` +
+        `attempts=${retryState.codeModeVerificationContinuationAttempts}/${MAX_CODE_MODE_VERIFICATION_CONTINUATIONS} — surfacing incomplete-turn error`,
     );
-    return { action: "retry" };
+    return surfaceIncompleteTurn({
+      ...input,
+      text: incompletePayloadText,
+      payloadCount,
+      incompleteTurnFallbackSafe: false,
+    });
   }
   if (
     !nextReasoningOnlyRetryInstruction &&

@@ -59,6 +59,69 @@ describe("repairCodeModeToolInput", () => {
     ).toEqual({ limit: 5 });
   });
 
+  it("lifts a shared required parent field out of stringified array items", () => {
+    const schema = {
+      type: "object",
+      properties: {
+        path: { type: "string" },
+        edits: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              oldText: { type: "string" },
+              newText: { type: "string" },
+            },
+            required: ["oldText", "newText"],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ["path", "edits"],
+      additionalProperties: false,
+    };
+
+    expect(
+      repairCodeModeToolInput(schema, {
+        edits: '[{"path":"editable.txt","oldText":"status=pending","newText":"status=verified"}]',
+      }),
+    ).toEqual({
+      path: "editable.txt",
+      edits: [{ oldText: "status=pending", newText: "status=verified" }],
+    });
+  });
+
+  it("does not lift ambiguous or conflicting array item fields", () => {
+    const schema = {
+      type: "object",
+      properties: {
+        path: { type: "string" },
+        edits: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              oldText: { type: "string" },
+              newText: { type: "string" },
+            },
+            required: ["oldText", "newText"],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ["path", "edits"],
+      additionalProperties: false,
+    };
+    const value = {
+      edits: [
+        { path: "a.txt", oldText: "one", newText: "two" },
+        { path: "b.txt", oldText: "three", newText: "four" },
+      ],
+    };
+
+    expect(repairCodeModeToolInput(schema, value)).toBe(value);
+  });
+
   it.each([
     { const: null },
     { enum: [null, "auto"] },

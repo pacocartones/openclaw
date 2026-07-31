@@ -18,11 +18,13 @@ const MAX_TRANSLATED_ARGUMENT_CHARS = 64_000;
 const GUEST_TOOL_PREFIX_PATTERN = /^tools[./]([A-Za-z_$][A-Za-z0-9_$]*)$/u;
 function translatedGuestCallGuidance(name: string): string {
   const base = `Recovered only the ${name} guest tool call. Re-read the original request and complete every remaining step before answering; do not repeat this completed call.`;
+  const readResultGuidance =
+    " In Code Mode, `await tools.read(...)` returns the text wrapper directly; use `.content` or `.field(key)`, never `[0]` or `result[0].content`.";
   if (name === "read") {
-    return `${base} If the user requested a named key's value, use the value associated with that exact key, never the key name itself.`;
+    return `${base}${readResultGuidance} If the user requested a named key's value, use the value associated with that exact key, never the key name itself.`;
   }
   if (name === "write" || name === "edit" || name === "apply_patch") {
-    return `${base} A mutation is not verification: when read-back or verification was requested, do not answer until it succeeds and matches the requested state.`;
+    return `${base} A mutation is not verification: when read-back or verification was requested, do not answer until it succeeds and matches the requested state.${readResultGuidance}`;
   }
   return base;
 }
