@@ -1175,7 +1175,7 @@ function isOllamaQwenStructuredToolFallbackCandidate(params: {
   }
   try {
     const payload = parseJsonObjectPreservingUnsafeIntegers(params.errorText);
-    const message = readStringValue(payload.error);
+    const message = readStringValue(payload?.error);
     return message ? OLLAMA_QWEN_TOOL_PARSER_ERROR_RE.test(message) : false;
   } catch {
     return false;
