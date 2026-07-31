@@ -549,6 +549,26 @@ describe("Tool Search input schemas", () => {
     });
   });
 
+  it("matches absolute read-back paths against relative mutation targets", async () => {
+    const read = fakeTool("read", Type.Object({ path: Type.String() }));
+    const write = fakeTool("write", Type.Object({ path: Type.String(), content: Type.String() }));
+    const catalogRef = createToolSearchCatalogRef();
+    registerHeadlessToolSearchCatalog({ catalogRef, tools: [read, write] });
+    const runtime = new ToolSearchRuntime(
+      { catalogRef, cwd: "/workspace" },
+      resolveToolSearchConfig({ tools: { toolSearch: { mode: "tools" } } } as never),
+      { validateInput: true },
+    );
+
+    await runtime.call("write", { path: "result.txt", content: "done" });
+    await runtime.call("read", { path: "/workspace/result.txt" });
+
+    expect(runtime.telemetry()).toMatchObject({
+      successfulObservationFileTargets: [{ path: "/workspace/result.txt" }],
+      unverifiedMutationFileTargets: [],
+    });
+  });
+
   it("does not convert plugin replay uncertainty into mutation evidence", async () => {
     const pluginRead = fakeTool("plugin_read", Type.Object({ id: Type.String() }));
     setPluginToolMeta(pluginRead, { pluginId: "example", optional: false });

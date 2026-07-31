@@ -3002,6 +3002,22 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
           codeModeEngaged: false,
           toolMetas: [
             {
+              toolName: "read",
+              fileTarget: { path: "/workspace/result.txt" },
+              fileTargetVerified: true,
+            },
+          ],
+        },
+        { pendingTargets: [{ path: "result.txt" }] },
+        "/workspace",
+      ),
+    ).toEqual({ pendingTargets: [] });
+    expect(
+      resolveCodeModeMutationVerificationState(
+        {
+          codeModeEngaged: false,
+          toolMetas: [
+            {
               toolName: "write",
               isError: true,
               mutatingAction: true,

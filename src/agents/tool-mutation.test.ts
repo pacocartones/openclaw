@@ -488,6 +488,22 @@ describe("tool mutation helpers", () => {
   it("matches lexically equivalent verification targets", () => {
     expect(isSameFileTarget({ path: "result.txt" }, { path: "./result.txt" })).toBe(true);
     expect(isSameFileTarget({ path: "src/../result.txt" }, { path: "result.txt" })).toBe(true);
+    expect(
+      isSameFileTarget(
+        { path: "/workspace/result.txt" },
+        { path: "result.txt" },
+        "linux",
+        "/workspace",
+      ),
+    ).toBe(true);
+    expect(
+      isSameFileTarget(
+        { path: "/other/result.txt" },
+        { path: "result.txt" },
+        "linux",
+        "/workspace",
+      ),
+    ).toBe(false);
   });
 
   it("preserves whitespace in file-target identities", () => {

@@ -648,9 +648,16 @@ export function isSameFileTarget(
   a: FileTarget,
   b: FileTarget,
   platform: NodeJS.Platform = process.platform,
+  cwd: string = process.cwd(),
 ): boolean {
   const normalizeIdentity = (value: string | undefined) => {
-    const normalized = value ? nodePath.normalize(value) : "";
+    if (!value) {
+      return "";
+    }
+    const pathApi = platform === "win32" ? nodePath.win32 : nodePath.posix;
+    const normalized = pathApi.isAbsolute(value)
+      ? pathApi.normalize(value)
+      : pathApi.resolve(cwd, value);
     return platform === "win32" ? normalized.toLowerCase() : normalized;
   };
   return (

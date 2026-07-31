@@ -64,9 +64,13 @@ export class ToolSearchMutationTelemetry {
 
   constructor(private readonly cwd?: string) {}
 
+  private isSameFileTarget(a: FileTarget, b: FileTarget): boolean {
+    return isSameFileTarget(a, b, process.platform, this.cwd);
+  }
+
   private resolveMutationTargetState(target: FileTarget): MutationTargetState {
     const existing = this.mutationTargetStates.find((state) =>
-      isSameFileTarget(state.target, target),
+      this.isSameFileTarget(state.target, target),
     );
     if (existing) {
       existing.target = target;
@@ -84,7 +88,7 @@ export class ToolSearchMutationTelemetry {
     }
     state.completionVersion += 1;
     const pendingIndex = this.unverifiedMutationFileTargets.findIndex((candidate) =>
-      isSameFileTarget(candidate, target),
+      this.isSameFileTarget(candidate, target),
     );
     if (pendingIndex >= 0) {
       this.unverifiedMutationFileTargets[pendingIndex] = target;
@@ -104,13 +108,13 @@ export class ToolSearchMutationTelemetry {
       expected === "absent"
         ? this.successfulAbsenceObservationFileTargets
         : this.successfulObservationFileTargets;
-    if (!observations.some((target) => isSameFileTarget(target, observation.fileTarget!))) {
+    if (!observations.some((target) => this.isSameFileTarget(target, observation.fileTarget!))) {
       observations.push(observation.fileTarget);
     }
     const verifiedIndex = this.unverifiedMutationFileTargets.findIndex((target) => {
       const targetExpectation = target.expected ?? "present";
       return (
-        isSameFileTarget(target, observation.fileTarget!) &&
+        this.isSameFileTarget(target, observation.fileTarget!) &&
         (targetExpectation === expected || targetExpectation === "unknown")
       );
     });

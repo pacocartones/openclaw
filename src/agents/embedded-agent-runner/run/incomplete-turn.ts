@@ -222,12 +222,15 @@ export function resolveCodeModeMutationVerificationState(
   initial: CodeModeMutationVerificationState = {
     pendingTargets: [],
   },
+  cwd?: string,
 ): CodeModeMutationVerificationState {
   let pendingTargets = [...initial.pendingTargets];
   const codeModeEngaged = attempt.codeModeEngaged === true;
+  const sameFileTarget = (a: FileTarget, b: FileTarget) =>
+    isSameFileTarget(a, b, process.platform, cwd);
   const addPendingTarget = (target: FileTarget) => {
     const existingIndex = pendingTargets.findIndex((candidate) =>
-      isSameFileTarget(candidate, target),
+      sameFileTarget(candidate, target),
     );
     if (existingIndex >= 0) {
       pendingTargets[existingIndex] = target;
@@ -257,7 +260,7 @@ export function resolveCodeModeMutationVerificationState(
     pendingTargets = pendingTargets.filter((candidate) => {
       const targetExpectation = candidate.expected ?? "present";
       return !(
-        isSameFileTarget(candidate, target) &&
+        sameFileTarget(candidate, target) &&
         (targetExpectation === expected || targetExpectation === "unknown")
       );
     });

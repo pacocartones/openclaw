@@ -81,6 +81,7 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
   const codeModeMutationVerification = resolveCodeModeMutationVerificationState(
     initial.attempt,
     input.finalization.retryState.codeModeMutationVerification,
+    input.terminalBase.runParams.cwd ?? input.terminalBase.runParams.workspaceDir,
   );
   input.finalization.retryState.codeModeMutationVerification = codeModeMutationVerification;
   const codeModeMutationVerificationRequired =
